@@ -5,8 +5,8 @@ import type { Envelope } from "@/lib/signal";
 import { fitRange, rawPlotRange, nearestPoint, valueDomain, formatValue, type PlotRange } from "@/lib/plot";
 export interface RawWindow extends Envelope { sensorId: string; timestamp: string | null; sps: number }
 const LEFT = 84, RIGHT = 22, TOP = 24, BOTTOM = 42;
-export default function RawCanvas({window: signal, unit = "V", labels, onInspect, height = 380}: {
-  window: RawWindow; unit?: string; labels?: string[]; onInspect?: () => void; height?: number;
+export default function RawCanvas({window: signal, unit = "V", labels, onInspect, height = 380, compact=false}: {
+  window: RawWindow; unit?: string; labels?: string[]; onInspect?: () => void; height?: number; compact?:boolean;
 }) {
   const ref = useRef<HTMLCanvasElement>(null), panel = useRef<HTMLDivElement>(null);
   const [range, setRange] = useState<PlotRange | null>(null), [hover, setHover] = useState<number | null>(null);
@@ -58,7 +58,7 @@ export default function RawCanvas({window: signal, unit = "V", labels, onInspect
     return () => { cancelAnimationFrame(frame); resize.disconnect(); };
   }, [signal, start, end, lockedY, point, labels, unit, height, axis]);
   return <div className="signal-instrument" ref={panel}>
-    <div className="plot-controls" role="group" aria-label="그래프 보기 설정">
+    {!compact&&<div className="plot-controls" role="group" aria-label="그래프 보기 설정">
       <button onClick={() => zoom(.5)} disabled={span <= 1 || signal.count < 2} aria-label="시간축 확대">＋ 확대</button>
       <button onClick={() => zoom(2)} disabled={!range} aria-label="시간축 축소">− 축소</button>
       <button onClick={() => pan(-1)} disabled={start <= 0} aria-label="이전 구간">←</button>
@@ -67,7 +67,7 @@ export default function RawCanvas({window: signal, unit = "V", labels, onInspect
       {!labels&&<label>가로축<select aria-label="Raw 가로축 단위" value={axis} onChange={e=>setAxis(e.target.value as "samples"|"time")}><option value="samples">샘플 수</option><option value="time">시간 (ms)</option></select></label>}
       <label><input type="checkbox" checked={!lockedY} onChange={e => setLockedY(e.target.checked ? null : valueDomain(signal.points.filter(p=>p.index>=start&&p.index<=end)))}/>Y 자동 스케일</label>
       <button className="plot-expand" onClick={async () => {try { if (document.fullscreenElement) await document.exitFullscreen(); else await panel.current?.requestFullscreen(); } catch {setError("이 브라우저는 전체 화면을 지원하지 않습니다.");}}}>전체 화면</button>
-    </div>
+    </div>}
     <div className="plot-readout" aria-live="off">{point ? <><b>{labels ? "배치" : "샘플 인덱스"} #{point.index}</b><span>{positionLabel(point.index)}</span><strong>{formatValue(point.value)} {unit}</strong></> : <span>포인터를 올리거나 그래프에 초점을 맞추고 ← → 키로 값을 확인하세요.</span>}</div>
     <canvas ref={ref} className="raw-canvas" tabIndex={0} role="img" aria-label={`${labels ? "대표값 추이" : "Raw Data"}: ${signal.count}개${labels?"":`, 가로축 0–${axis==="samples"?signal.count:sampleTimeMs(signal.count,signal.sps)} ${axis==="samples"?"샘플":"ms"}`}, 최소 ${formatValue(signal.min)}, 최대 ${formatValue(signal.max)} ${unit}. 방향키로 샘플 조회, 더하기/빼기로 확대·축소.`} style={{height}}
       onPointerMove={e => {const box = e.currentTarget.getBoundingClientRect(); setHover(Math.max(start, Math.min(end, start + (e.clientX - box.left - LEFT) / (box.width - LEFT - RIGHT) * span)));}}

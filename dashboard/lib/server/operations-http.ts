@@ -1,3 +1,4 @@
+import {AnomalyTrainingService} from "./training.ts";
 import {OperationsService,state,systemLog} from "./operations.ts";
 import {controlDaq,parseCommand} from "./daq-control.ts";
 import {LocationService,clikaStatus} from "./locations.ts";
@@ -9,6 +10,24 @@ interface Options {request:Request;url:URL;path:string[];svc:MaintenanceService;
 const result=(data:unknown,status=200)=>Response.json({data},{status,headers:{"Cache-Control":"no-store"}});
 export async function operationsHttp({request,url,path,svc,readJson,bytes,authorize}:Options):Promise<Response|null>{
   const [resource,id,action,detail]=path,method=request.method,ops=new OperationsService(svc.repository),locations=new LocationService(svc.repository);
+  const training=new AnomalyTrainingService(svc.repository);
+  if(resource==="sensors"&&action==="diagnoses"&&path.length===3&&method==="GET"){
+    const limit=Number(url.searchParams.get("limit")||20);check(Number.isInteger(limit)&&limit>0&&limit<=100,"판정 이력은 1~100개입니다.");svc.advanceDemo();const store=svc.repository.read();check(store.sensors.some(s=>s.id===id),"센서를 찾을 수 없습니다.",404);return result(store.diagnoses.filter(d=>d.sensorId===id).sort((a,b)=>b.timestamp.localeCompare(a.timestamp)).slice(0,limit));
+  }
+  if(resource==="sensors"&&action==="anomaly-training"&&path.length===3){
+    if(method==="GET")return result(training.history(id));
+    if(method==="POST")return result(training.request(id,await readJson()),201);
+  }
+  if(resource==="anomaly-training"&&action==="activate"&&path.length===3&&method==="POST")return result(training.activate(id,await readJson()));
+  if(resource==="edge"&&id==="training-jobs"){
+    authorize();
+    if(path.length===2&&method==="GET")return result(training.queue(uuid(url.searchParams.get("daqUuid"))));
+    if(path.length===4&&detail==="report"&&method==="POST")return result(training.report(action,await readJson()));
+    if(path.length===4&&detail==="data"&&method==="GET"){
+      const job=training.data(action,uuid(url.searchParams.get("daqUuid")));const archive=ops.exportRange(job.daqUuid,job.from,job.to,true,false);
+      return new Response(archive.bytes,{headers:{"Content-Type":"application/gzip","Content-Disposition":`attachment; filename="training-${job.id}.jsonl.gz"`,"Cache-Control":"no-store","X-Training-Data-Scope":"server-preview"}});
+    }
+  }
   if(resource==="daqs"&&action==="acquisition"&&path.length===3&&(method==="GET"||method==="POST")) {
     const key=uuid(id),board=svc.repository.read().daqs.find(d=>d.uuid===key);
     check(board,"DAQ를 찾을 수 없습니다.",404);
