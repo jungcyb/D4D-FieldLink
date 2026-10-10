@@ -1,0 +1,48 @@
+# Local-only reference material, credentials, downloads and archived work.
+/.meta/
+
+# Guard old locations too, in case a local file is recreated.
+/connection.txt
+/conneciton.txt
+/plan.md
+/todo.md
+/sampleusecase.txt
+/client/host.txt
+/tools/ssh/known_hosts
+/tools/drivers/
+/backups/
+/.legacy/
+/dashboard/*-raw.csv
+.ssh-askpass.cmd
+.dt-audit.sh
+
+# Locally rendered PDF inspection artifacts.
+tmp/
+.tmp/
+__pycache__/
+*.pyc
+.venv*/
+**/.venv/
+.idea/
+integration/state/
+anamolydetection/*.zip
+anamolydetection/**/outputs/
+anamolydetection/**/candidates/
+anamolydetection/**/*.joblib
+dashboard/*.zip
+
+# MCU+ SDK generated files and local build products.
+firmware/**/ti-arm-clang/generated/
+firmware/**/ti-arm-clang/obj/
+firmware/**/ti-arm-clang/*.out
+firmware/**/ti-arm-clang/*.map
+firmware/**/ti-arm-clang/*.lnkxml
+firmware/**/ti-arm-clang/*.rprc*
+firmware/**/ti-arm-clang/*.appimage*
+firmware/**/ti-arm-clang/*.bin
+firmware/**/ti-arm-clang/*.ossr
+firmware/**/ti-arm-clang/am64-*-fw
+
+# Downloaded TI binaries; see docs/README.md for reproducible source URLs/hashes.
+docs/ti/*.pdf
+docs/ti/*.zip

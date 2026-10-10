@@ -1,0 +1,5 @@
+# Copy to .meta/connection.txt and fill in your own board access profile.
+# This example contains no real host, username or password.
+ip=192.0.2.10
+user=your-user
+password=

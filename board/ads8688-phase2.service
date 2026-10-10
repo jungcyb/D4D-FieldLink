@@ -1,0 +1,15 @@
+[Unit]
+Description=ADS8688 acquisition, storage and network service
+After=systemd-modules-load.service
+
+[Service]
+Type=simple
+ExecStartPre=/opt/ads8688/activate_phase2.sh start
+ExecStart=/opt/ads8688/venv/bin/python /opt/ads8688/ads8688d.py --port 8765 --discovery-port 8764 --data-dir /var/lib/ads8688/data --segment-bytes 268435456 --reserve-bytes 2147483648
+ExecStopPost=/opt/ads8688/activate_phase2.sh stop
+Restart=on-failure
+RestartSec=2
+StateDirectory=ads8688
+
+[Install]
+WantedBy=multi-user.target

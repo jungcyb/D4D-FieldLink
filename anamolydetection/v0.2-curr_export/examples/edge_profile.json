@@ -1,0 +1,12 @@
+{
+  "profile_id": "example_motor/current/steady/v1",
+  "feature_schema_version": "edge_waveform_v1",
+  "sensor_type": "current",
+  "unit": "A",
+  "channels": ["phase_a", "phase_b", "phase_c"],
+  "window_seconds": 1.0,
+  "target_sample_rate_hz": 1000,
+  "min_sample_rate_hz": 1000,
+  "max_sample_rate_hz": 4000,
+  "frequency_bands_hz": [[0, 50], [50, 150], [150, 300], [300, 500]]
+}
