@@ -1,16 +1,19 @@
 # AM6442 SK + ADS8688 FIELDLINK
 
-ADS8688 8채널을 AM6442 M4F에서 취득하고 R5F/RPMsg를 거쳐 Linux에 저장한 뒤, 서버가 웹 대시보드로 여러 장치를 모니터링하는 단일 저장소입니다.
+ADS8688 8채널과 ADS1263의 압력·온도 차동 입력을 AM6442의 독립 코어에서 취득하고, Linux에 저장한 뒤 서버가 웹 대시보드로 여러 장치를 모니터링하는 단일 저장소입니다.
 
 ```text
 ADS8688 -> M4F SPI -> R5F relay -> Linux ads8688d
           -> board ring storage + UDP discovery/TCP stream
           -> server collector -> Next.js API/dashboard -> browser users
+
+ADS1263 -> MAIN_SPI1 / R5FSS1-0 -> RPMsg -> Linux
+          bring-up: ADC1 sequential AIN0-AIN1 / AIN6-AIN7 (STM direct-read + DMA)
 ```
 
 ## 폴더
 
-- `firmware/`: M4 ADS8688 취득 및 R5 RPMsg relay
+- `firmware/`: M4 ADS8688 취득, R5 RPMsg relay, R5FSS1-0 ADS1263 취득
 - `board/`: Python 3.13 Linux 데몬, systemd 단위
 - `client/`: CLI와 pygame 8채널 scope
 - `integration/`: 서버 collector와 재연결/checkpoint 상태
@@ -61,4 +64,4 @@ node node_modules\typescript\bin\tsc --noEmit
 node --experimental-strip-types --test tests\*.test.mts
 ```
 
-보드 배포는 `tools/deploy.ps1`, TCP/UDP wire format은 `docs/PROTOCOL.md`를 참고하세요. 과거 phase 계획과 실측 기록은 로컬 `.meta/plan.md`, `.meta/docs/TEST_RESULTS.md`에 보관합니다. 실제 센서 프로필과 승인된 정상 데이터가 없으므로 이상진단 모델은 아직 활성화하지 않으며, 가짜 정상/이상 판정을 생성하지 않습니다.
+ADS8688 보드 배포는 `tools/deploy.ps1`, ADS1263 staging/활성화는 `tools/deploy_ads1263.ps1`, TCP/UDP wire format은 `docs/PROTOCOL.md`를 참고하세요. 과거 phase 계획과 실측 기록은 로컬 `.meta/plan.md`, `.meta/docs/TEST_RESULTS.md`에 보관합니다. 실제 센서 프로필과 승인된 정상 데이터가 없으므로 이상진단 모델은 아직 활성화하지 않으며, 가짜 정상/이상 판정을 생성하지 않습니다.

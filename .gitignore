@@ -1,5 +1,11 @@
 # Local-only reference material, credentials, downloads and archived work.
 /.meta/
+/.ref/
+# Guard the accidentally comma-prefixed spelling too.
+/,ref/
+# Local CCS workspace state and separately cloned reference sources.
+/firmware/.theia/
+/firmware/r5f_fallback/reference/
 
 # Guard old locations too, in case a local file is recreated.
 /connection.txt

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  SK-AM64B onboard XDS110 (J12), for an already booted Linux system.
+  Connect ONLY MAIN_Cortex_R5_0_0 (R5F_0_0 / fallback).
+  Load Symbols, NOT Load Program. Do not reset or initialize the SoC/DDR.
+  This file removes default CPU_reset.gel hooks; it does not control CCS
+  launch options or guarantee that connecting will not halt the selected CPU.
+-->
+<configurations XML_version="1.2" id="configurations_0">
+    <configuration XML_version="1.2" id="configuration_0">
+        <instance XML_version="1.2" desc="Texas Instruments XDS110 USB Debug Probe" href="connections/TIXDS110_Connection.xml" id="Texas Instruments XDS110 USB Debug Probe" xml="TIXDS110_Connection.xml" xmlpath="connections"/>
+        <connection XML_version="1.2" id="Texas Instruments XDS110 USB Debug Probe">
+            <instance XML_version="1.2" href="drivers/tixds510cs_dap.xml" id="drivers" xml="tixds510cs_dap.xml" xmlpath="drivers"/>
+            <instance XML_version="1.2" href="drivers/tixds510cortexA53.xml" id="drivers" xml="tixds510cortexA53.xml" xmlpath="drivers"/>
+            <instance XML_version="1.2" href="drivers/tixds510cortexR.xml" id="drivers" xml="tixds510cortexR.xml" xmlpath="drivers"/>
+            <instance XML_version="1.2" href="drivers/tixds510cortexM.xml" id="drivers" xml="tixds510cortexM.xml" xmlpath="drivers"/>
+            <instance XML_version="1.2" href="drivers/tixds510pru.xml" id="drivers" xml="tixds510pru.xml" xmlpath="drivers"/>
+            <instance XML_version="1.2" href="drivers/tixds510csstm.xml" id="drivers" xml="tixds510csstm.xml" xmlpath="drivers"/>
+            <instance XML_version="1.2" href="drivers/tixds510ctset2.xml" id="drivers" xml="tixds510ctset2.xml" xmlpath="drivers"/>
+            <instance XML_version="1.2" href="drivers/tixds510etbcs.xml" id="drivers" xml="tixds510etbcs.xml" xmlpath="drivers"/>
+            <property Type="choicelist" Value="0" id="Power Selection"/>
+            <property Type="choicelist" Value="0" id="SWD Mode Settings"/>
+            <platform XML_version="1.2" id="platform_0">
+                <!-- Bare SoC: intentionally not boards/AM64x_SK_EVM.xml. -->
+                <instance XML_version="1.2" desc="AM64x_0" href="devices/AM64x.xml" id="AM64x_0" xml="AM64x.xml" xmlpath="devices"/>
+                <device id="AM64x_0" partnum="AM64x" HW_revision="1" XML_version="2" description="AM64x">
+                    <router id="CS_DAP_0" isa="CS_DAP" HW_revision="1.0" XML_version="1.2" description="CS_DAP Router">
+                        <!-- Override every CPU_reset.gel supplied by AM64x.xml. -->
+                        <subpath id="MAIN_PULSAR_0_0">
+                            <cpu id="MAIN_PULSAR_Cortex_R5_0_0" isa="Cortex_R5" HW_revision="1.0" XML_version="1.2" description="Cortex_R5 CPU 0">
+                                <property Type="filepathfield" Value="" id="GEL File"/>
+                            </cpu>
+                        </subpath>
+                        <subpath id="MAIN_PULSAR_0_1">
+                            <cpu id="MAIN_PULSAR_Cortex_R5_0_1" isa="Cortex_R5" HW_revision="1.0" XML_version="1.2" description="Cortex_R5 CPU 1">
+                                <property Type="filepathfield" Value="" id="GEL File"/>
+                            </cpu>
+                        </subpath>
+                        <subpath id="MAIN_PULSAR_1_0">
+                            <cpu id="MAIN_PULSAR_Cortex_R5_1_0" isa="Cortex_R5" HW_revision="1.0" XML_version="1.2" description="Cortex_R5 CPU 0">
+                                <property Type="filepathfield" Value="" id="GEL File"/>
+                            </cpu>
+                        </subpath>
+                        <subpath id="MAIN_PULSAR_1_1">
+                            <cpu id="MAIN_PULSAR_Cortex_R5_1_1" isa="Cortex_R5" HW_revision="1.0" XML_version="1.2" description="Cortex_R5 CPU 1">
+                                <property Type="filepathfield" Value="" id="GEL File"/>
+                            </cpu>
+                        </subpath>
+                        <subpath id="BLAZAR_CM4F">
+                            <cpu id="Cortex_M4F_0" isa="Cortex_M4F" HW_revision="1.0" XML_version="1.2" description="Cortex_M4F CPU">
+                                <property Type="filepathfield" Value="" id="GEL File"/>
+                            </cpu>
+                        </subpath>
+                    </router>
+                </device>
+            </platform>
+        </connection>
+    </configuration>
+</configurations>
