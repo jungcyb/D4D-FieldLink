@@ -45,13 +45,11 @@ StackType_t gMainTaskStack[MAIN_TASK_SIZE] __attribute__((aligned(32)));
 StaticTask_t gMainTaskObj;
 TaskHandle_t gMainTask;
 
-void ipc_rpmsg_echo_main(void *args);
+void ads1263_scan_task(void *args);
 
 void freertos_main(void *args)
 {
-    ipc_rpmsg_echo_main(NULL);
-
-    vTaskDelete(NULL);
+    ads1263_scan_task(args);
 }
 
 

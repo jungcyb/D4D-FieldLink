@@ -1,16 +1,22 @@
 /**
  * These arguments were used when this file was generated. They will be automatically applied on subsequent loads
  * via the GUI or CLI. Run CLI with '--help' for additional information on how to override these arguments.
- * @cliArgs --device "AM64x" --package "ALV" --part "Default" --context "r5fss0-0" --product "MCU_PLUS_SDK_AM64x@11.02.00"
- * @versions {"tool":"1.17.0+3128"}
+ * @cliArgs --device "AM64x" --part "Default" --package "ALV" --context "r5fss0-0" --product "MCU_PLUS_SDK_AM64x@11.02.00"
+ * @v2CliArgs --device "AM6442" --package "FCBGA (ALV)" --variant "AM6442-D" --context "r5fss0-0" --product "MCU_PLUS_SDK_AM64x@11.02.00"
+ * @versions {"tool":"1.27.0+4565"}
  */
 
 /**
  * Import the modules used in this configuration.
  */
 const ipc             = scripting.addModule("/drivers/ipc/ipc");
+const mcspi           = scripting.addModule("/drivers/mcspi/mcspi", {}, false);
+const mcspi1          = mcspi.addInstance();
+const gpio            = scripting.addModule("/drivers/gpio/gpio", {}, false);
+const gpio1           = gpio.addInstance();
+const gpio2           = gpio.addInstance();
 const debug_log       = scripting.addModule("/kernel/dpl/debug_log");
-const dpl_cfg = scripting.addModule("/kernel/dpl/dpl_cfg");
+const dpl_cfg         = scripting.addModule("/kernel/dpl/dpl_cfg");
 const mpu_armv7       = scripting.addModule("/kernel/dpl/mpu_armv7", {}, false);
 const mpu_armv71      = mpu_armv7.addInstance();
 const mpu_armv72      = mpu_armv7.addInstance();
@@ -43,12 +49,38 @@ const section11       = section.addInstance();
  */
 ipc.a53ss0_0 = "notify_rpmsg";
 
+mcspi1.$name                       = "CONFIG_ADS1263_MCSPI";
+mcspi1.intrEnable                  = "POLLED";
+mcspi1.inputSelect                 = "0";
+mcspi1.dpe0                        = "DISABLE";
+mcspi1.dpe1                        = "ENABLE";
+mcspi1.SPI.$assign                 = "SPI1";
+mcspi1.mcspiChannel[0].$name       = "CONFIG_ADS1263_CH0";
+mcspi1.mcspiChannel[0].frameFormat = "POL0_PHA1";
+mcspi1.mcspiChannel[0].bitRate     = 4500000;
+mcspi1.mcspiChannel[0].CSn.$assign = "SPI1_CS0";
+
+gpio1.$name                = "ADS1263_DRDY";
+gpio1.pinDir               = "INPUT";
+gpio1.GPIO.$assign         = "GPIO0";
+gpio1.GPIO.gpioPin.$assign = "GPMC0_BE0n_CLE";
+
+gpio2.$name                = "ADS1263_RESET";
+gpio2.pinDir               = "OUTPUT";
+gpio2.GPIO.$assign         = "GPIO0";
+gpio2.GPIO.gpioPin.$assign = "GPMC0_ADVn_ALE";
+
 debug_log.enableCssLog             = false;
 debug_log.enableUartLog            = true;
 debug_log.enableSharedMemLog       = true;
 debug_log.enableSharedMemLogReader = true;
 debug_log.uartLog.$name            = "CONFIG_UART0";
 debug_log.uartLog.UART.$assign     = "USART0";
+
+const uart_v0_template  = scripting.addModule("/drivers/uart/v0/uart_v0_template", {}, false);
+const uart_v0_template1 = uart_v0_template.addInstance({}, false);
+uart_v0_template1.$name = "drivers_uart_v0_uart_v0_template0";
+debug_log.uartLog.child = uart_v0_template1;
 
 mpu_armv71.$name             = "CONFIG_MPU_REGION0";
 mpu_armv71.size              = 31;
@@ -259,3 +291,8 @@ section11.output_section[0].alignment = 0;
  */
 debug_log.uartLog.UART.RXD.$suggestSolution = "UART0_RXD";
 debug_log.uartLog.UART.TXD.$suggestSolution = "UART0_TXD";
+
+mcspi1.SPI.CLK.$suggestSolution             = "SPI1_CLK";
+mcspi1.SPI.D0.$suggestSolution              = "SPI1_D0";
+mcspi1.SPI.D1.$suggestSolution              = "SPI1_D1";
+mcspi1.mcspiChannel[0].CSn.$suggestSolution = "SPI1_CS0";
