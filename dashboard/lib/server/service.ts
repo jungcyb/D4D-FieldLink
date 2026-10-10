@@ -49,7 +49,8 @@ export class MaintenanceService {
       const last = stored ? { ...stored, value: stored.value * s.calibration.scale + s.calibration.offset } : null;
       const preview = last ? { id: last.id, sensorId: last.sensorId, timestamp: last.timestamp, value: last.value, sps: last.sps, source: last.source } : null;
       const channel=d.channels?.find(c=>channelKey(c.id)===channelKey(s.channel));
-      return { ...s, equipmentId: d.equipmentId, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null, daqLabel: d.label, latest: preview, diagnosis: lastDiagnoses.get(s.id) || null, online: online(d)&&s.connected!==false&&channel?.streamAvailable!==false };
+      const declaredChannelOnline=!d.channels?.length||channel?.streamAvailable===true;
+      return { ...s, equipmentId: d.equipmentId, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null, daqLabel: d.label, latest: preview, diagnosis: lastDiagnoses.get(s.id) || null, online: online(d)&&s.connected!==false&&declaredChannelOnline };
     });
     const equipment = store.equipment.map(e => {
       const children = sensors.filter(s => s.equipmentId === e.id);
@@ -82,7 +83,8 @@ export class MaintenanceService {
   }
   private trimReadings(store: Store): void {
     const configured = Number(process.env.RAW_BATCH_RETENTION);
-    const limit = Number.isInteger(configured) && configured > 0 ? configured : store.mode === "external" ? 12 : 720;
+    // Keep a bounded recent server cache; long ranges come from recovery archives.
+    const limit = Number.isInteger(configured) && configured > 0 ? configured : store.mode === "external" ? 120 : 720;
     store.readings = store.sensors.flatMap(s => store.readings.filter(r => r.sensorId === s.id).sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit));
   }
   upsertBoard(input: unknown): Daq {
@@ -135,13 +137,26 @@ export class MaintenanceService {
       const existing = id ? find(store.sensors, id) : null;
       const daqUuid = uuid(data.daqUuid || existing?.daqUuid);
       const daq=board(store, daqUuid);
+      const channel=text(data.channel,"채널",40);
       const requested=data.sps==null?null:numeric(data.sps,"SPS",0.01,1000000);
-      const sps=existing?.sps??channelRate(daq,String(data.channel||existing?.channel||""))??requested;
+      const sps=existing?.sps??channelRate(daq,channel)??requested;
       check(!existing || existing.daqUuid === daqUuid, "센서의 DAQ는 변경할 수 없습니다.");
-      const fields = { daqUuid, channel: text(data.channel, "채널", 40), name: text(data.name, "센서명"), type: choice(data.type, ["vibration", "temperature", "current", "analog"] as const, "센서 종류"), position: text(data.position, "부착 위치"), unit: text(data.unit, "단위", 20), sps };
+      check(!existing || channelKey(existing.channel)===channelKey(channel),"이력 정합성을 위해 등록된 센서의 DAQ 채널은 변경할 수 없습니다.",409,"IMMUTABLE_CHANNEL");
+      check(existing || !daq.channels?.length || daq.channels.some(row=>channelKey(row.id)===channelKey(channel)),"DAQ가 현재 보고하지 않는 채널입니다.",409,"UNKNOWN_CHANNEL");
+      const fields = { daqUuid, channel, name: text(data.name, "센서명"), type: choice(data.type, ["vibration", "temperature", "current", "analog"] as const, "센서 종류"), position: text(data.position, "부착 위치"), unit: text(data.unit, "단위", 20), sps };
       check(!store.sensors.some(s => s.daqUuid === daqUuid && channelKey(s.channel) === channelKey(fields.channel) && s.id !== id), "이 DAQ에 이미 등록된 채널입니다.", 409, "DUPLICATE_CHANNEL");
       if (existing) { Object.assign(existing, fields); existing.registrationSource="manual"; return existing; }
       const sensor: Sensor = { id: randomUUID(), registrationSource:"manual", ...fields, calibration: { scale: 1, offset: 0, inputUnit: data.inputUnit == null ? daq.channels?.find(c=>channelKey(c.id)===channelKey(fields.channel))?.inputUnit || (store.mode === "demo" ? fields.unit : "V") : text(data.inputUnit,"입력 단위",20), updatedAt: null }, photo: null, createdAt: iso() }; store.sensors.push(sensor); return sensor;
+    });
+  }
+  removeSensor(id: string): Sensor {
+    return this.repository.mutate(store => {
+      const sensor=find(store.sensors,id);
+      const hasReadings=store.readings.some(row=>row.sensorId===id);
+      const hasDiagnoses=store.diagnoses.some(row=>row.sensorId===id);
+      check(!hasReadings&&!hasDiagnoses,"측정 또는 진단 이력이 있는 센서는 삭제할 수 없습니다. 센서명·위치·단위는 편집할 수 있습니다.",409,"HAS_HISTORY");
+      store.sensors=store.sensors.filter(row=>row.id!==id);
+      return sensor;
     });
   }
   calibrateSensor(sensorId: string, input: unknown): Sensor {

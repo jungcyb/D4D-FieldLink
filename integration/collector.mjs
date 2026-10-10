@@ -27,10 +27,22 @@ export function decodeFrame(payload, timestamped = false) {
   if ((!nu40 && frame.readUInt32LE(0) !== 0x38534441) || frame.readUInt16LE(4) !== 1 || frame.readUInt16LE(6) !== 28 || frame.readUInt16LE(24) !== (nu40 ? 3 : 8) || frame.readUInt16LE(26) !== (nu40 ? 2 : 1) || frame.readUInt32LE(44) !== crc32(frame.subarray(0, 44))) throw new Error("invalid DAQ frame");
   const scanRate=frame.readUInt32LE(20);if(scanRate<1||scanRate>1000000)throw new Error("invalid scan rate");
   const sourceUs = frame.readBigUInt64LE(12);
-  return { recordId, source: nu40 ? 'nu40' : 'ads8688', sourceUs,
+  return { recordId, receivedNs, source: nu40 ? 'nu40' : 'ads8688', sourceUs,
     channelIds: Array.from({length: nu40 ? 3 : 8}, (_, i) => `CH${i + (nu40 ? 8 : 0)}`),
     timestamp: new Date(Number(nu40 ? sourceUs / BigInt(1000) : receivedNs / BigInt(1_000_000))).toISOString(),
     sequence: frame.readUInt32LE(8), scanRate, samples: Array.from({ length: nu40 ? 3 : 8 }, (_, channel) => nu40 ? frame.readInt16LE(28 + channel * 2) * .000061 : rawCodeToVolts(frame.readUInt16LE(28 + channel * 2))) };
+}
+
+export class LiveSampleClock {
+  constructor(){this.sources=new Map();}
+  normalize(frame){
+    if(frame.archived||frame.source==='nu40')return frame;
+    const sourceNs=frame.sourceUs*BigInt(1000),previous=this.sources.get(frame.source);
+    const reset=!previous||frame.sourceUs<=previous.sourceUs;
+    const offsetNs=reset?frame.receivedNs-sourceNs:previous.offsetNs;
+    this.sources.set(frame.source,{sourceUs:frame.sourceUs,offsetNs});
+    return {...frame,timestamp:new Date(Number((sourceNs+offsetNs)/BigInt(1_000_000))).toISOString()};
+  }
 }
 
 export function recoveryGaps(plan, firstTimestamp, lastTimestamp) {
@@ -102,7 +114,7 @@ export async function discover() {
 
 class BoardClient {
   constructor(socket) {
-    this.socket = socket; this.buffer = Buffer.alloc(0); this.pending = new Map(); this.requestId = 1; this.onFrame = () => {}; this.onAnomaly = () => {};
+    this.socket = socket; this.buffer = Buffer.alloc(0); this.pending = new Map(); this.requestId = 1; this.onFrame = () => {}; this.onAnomaly = () => {};this.liveClock=new LiveSampleClock();
     this.closed = new Promise(resolve => { this.resolveClosed = resolve; });
     socket.on("data", chunk => this.receive(chunk)); socket.on("close", () => { for (const item of this.pending.values()) item.reject(new Error("board connection closed")); this.pending.clear(); this.resolveClosed(); }); socket.on("error", () => {});
   }
@@ -116,7 +128,7 @@ class BoardClient {
       const size = this.buffer.readUInt32BE(0), version = this.buffer.readUInt16BE(4); if (version !== 1 || size > 65536) { this.socket.destroy(new Error("invalid board protocol header")); return; }
       if (this.buffer.length < 12 + size) return;
       const type = this.buffer.readUInt16BE(6), requestId = this.buffer.readUInt32BE(8), payload = this.buffer.subarray(12, 12 + size); this.buffer = this.buffer.subarray(12 + size);
-      if ([TYPES.LIVE_DATA, TYPES.ARCHIVE_DATA, TYPES.ARCHIVE_DATA_V2, TYPES.LIVE_DATA_V2].includes(type)) { try { this.onFrame({ ...decodeFrame(payload, type === TYPES.ARCHIVE_DATA_V2 || type === TYPES.LIVE_DATA_V2), archived: type === TYPES.ARCHIVE_DATA || type === TYPES.ARCHIVE_DATA_V2 }); } catch (error) { this.socket.destroy(error); } continue; }
+      if ([TYPES.LIVE_DATA, TYPES.ARCHIVE_DATA, TYPES.ARCHIVE_DATA_V2, TYPES.LIVE_DATA_V2].includes(type)) { try { const archived=type === TYPES.ARCHIVE_DATA || type === TYPES.ARCHIVE_DATA_V2;this.onFrame(this.liveClock.normalize({ ...decodeFrame(payload, type === TYPES.ARCHIVE_DATA_V2 || type === TYPES.LIVE_DATA_V2), archived })); } catch (error) { this.socket.destroy(error); } continue; }
       if (type === TYPES.ANOMALY_EVENT) { try { this.onAnomaly(JSON.parse(payload.toString("utf8"))); } catch (error) { log("invalid anomaly event", error.message); } continue; }
       const pending = this.pending.get(requestId); if (!pending) continue;
       if (type === TYPES.ERROR) { this.pending.delete(requestId); pending.reject(new Error(JSON.parse(payload.toString("utf8")).error)); }
@@ -142,8 +154,9 @@ async function saveCursor(uuid, recordId) { await mkdir(stateDirectory, { recurs
 
 function channelIndex(channel) { const match = /^CH-?([0-9]|10)$/i.exec(channel); return match ? Number(match[1]) : null; }
 
+export function batchFrameCount(rate,batchMs=1000){return Math.min(4096,Math.max(1,Math.round(rate*batchMs/1000)));}
 export class BatchWriter {
-  constructor(uuid, client, recovery = null) { this.uuid = uuid; this.client = client; this.recovery = recovery; this.recoverySequence = recovery?.nextSequence || 0; this.recoveryFirst = null; this.recoveryLast = null; this.frames = []; this.recoveryBatch = false; this.queue = Promise.resolve(); this.error = null; this.lastSaved = null; this.sensors = []; this.sensorRefresh = 0; }
+  constructor(uuid, client, recovery = null, batchMs=Number(process.env.DASHBOARD_BATCH_MS||1000)) { this.uuid = uuid; this.client = client; this.recovery = recovery; this.batchMs = Number.isFinite(batchMs)&&batchMs>=20&&batchMs<=1000?batchMs:1000;this.recoverySequence = recovery?.nextSequence || 0; this.recoveryFirst = null; this.recoveryLast = null; this.frames = []; this.recoveryBatch = false; this.queue = Promise.resolve(); this.error = null; this.lastSaved = null; this.sensors = []; this.sensorRefresh = 0; this.waitingSources = new Set(); }
   async refreshSensors() { if (Date.now() - this.sensorRefresh < 5000) return; const sensors = await dashboard("/sensors"); this.sensors = sensors.filter(sensor => sensor.daqUuid === this.uuid && channelIndex(sensor.channel) !== null); this.sensorRefresh = Date.now(); }
   add(frame) {
     // Each source has its own sample clock and partial batch. The upload queue and
@@ -161,10 +174,11 @@ export class BatchWriter {
     // faster than the advertised SPS (ESP/BLE sensors do) that projection overshoots, so start a new batch before it would.
     const overshootsRecovery = recoveryBatch && this.recoveryBatch && Date.parse(this.frames[0]?.timestamp) + this.frames.length * 1000 / frame.scanRate > Date.parse(this.recovery.to) + 1;
     const previous=this.frames.at(-1),continuous=previous&&(frame.sequence!==undefined&&previous.sequence!==undefined?frame.sequence===((previous.sequence+1)>>>0):frame.recordId===previous.recordId+BigInt(1));
-    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || overshootsRecovery || this.frames[0].scanRate !== frame.scanRate || !continuous || this.frames.length >= Math.min(frame.scanRate,4096))) this.closeBatch();
+    const target=batchFrameCount(frame.scanRate,this.batchMs);
+    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || overshootsRecovery || this.frames[0].scanRate !== frame.scanRate || !continuous || this.frames.length >= target)) this.closeBatch();
     if (frame.archived && !recoveryBatch) return;
     if (!this.frames.length) this.recoveryBatch = recoveryBatch;
-    this.frames.push(frame); if (this.frames.length >= Math.min(frame.scanRate,4096)) this.closeBatch();
+    this.frames.push(frame); if (this.frames.length >= target) this.closeBatch();
   }
   closeBatch() {
     if (!this.frames.length) return; const frames = this.frames, recoveryBatch = this.recoveryBatch; this.frames = [];
@@ -177,9 +191,13 @@ export class BatchWriter {
       if (readings.length && recoveryBatch) {
         const result = await dashboard(`/recoveries/${this.recovery.id}/batches`, { method: "POST", body: JSON.stringify({ sequence: this.recoverySequence, batchId: `record-${first.recordId}-${last.recordId}`, frame: { readings }, logs: [] }) });
         this.recoverySequence = result.nextSequence; this.recoveryFirst ||= first.timestamp; this.recoveryLast = last.timestamp;
+        const configuredDelay=Number(process.env.RECOVERY_UPLOAD_DELAY_MS),delay=Number.isFinite(configuredDelay)&&configuredDelay>=0&&configuredDelay<=5000?configuredDelay:500;
+        await sleep(delay);
       } else if (readings.length) await dashboard("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: this.uuid, frameId: `record-${first.recordId}-${last.recordId}`, readings }) });
       if (!this.recovery) { await saveCursor(this.uuid, last.recordId); this.lastSaved = last.recordId; }
-      if (!readings.length) log("waiting for channel registration", this.uuid);
+      const source=first.source||"ads8688";
+      if(readings.length)this.waitingSources.delete(source);
+      else if(!this.waitingSources.has(source)){this.waitingSources.add(source);log("waiting for channel registration",`${this.uuid} source=${source}`);}
     }).catch(error => { this.error = error; log("dashboard ingest failed", `${this.uuid} ${error.message}`); this.client.socket.destroy(error); });
   }
   async finishRecovery() {
@@ -259,7 +277,9 @@ async function runConnection(board) {
     const recoveries = await dashboard(`/edge/recovery?daqUuid=${encodeURIComponent(uuid)}`), recovery = recoveries.find(plan => plan.status === "pending" || plan.status === "receiving") || null;
     const archive = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, earliest = archive?.earliest_record_id == null ? null : BigInt(archive.earliest_record_id), cursor = recoveryCursor(recovery, earliest);
     const liveWriter = new BatchWriter(uuid, client), liveFrames = new OrderedFrames(liveWriter, null);
-    const recoveryWriter = recovery ? new BatchWriter(uuid, client, recovery) : null, recoveryFrames = recoveryWriter && cursor !== null ? new OrderedFrames(recoveryWriter, cursor + BigInt(1)) : null;
+    // Historical replay is not interactive. Keep it in one-second chunks so it
+    // cannot flood the JSON repository and delay live ingestion.
+    const recoveryWriter = recovery ? new BatchWriter(uuid, client, recovery, 1000) : null, recoveryFrames = recoveryWriter && cursor !== null ? new OrderedFrames(recoveryWriter, cursor + BigInt(1)) : null;
     client.onFrame = frame => frame.archived ? recoveryFrames?.accept(frame) : liveFrames.accept(frame);
     // Anomaly verdicts arrive pushed (ANOMALY_EVENT, on state change) and in the 10 s STATUS fallback; report them in arrival order.
     const anomalyStates = new Map(); let anomalyQueue = Promise.resolve(), pendingAnomaly=null, deliveringAnomaly=false;

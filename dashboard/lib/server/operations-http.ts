@@ -36,6 +36,8 @@ export async function operationsHttp({request,url,path,svc,readJson,bytes,author
   if(method==="GET"&&resource==="clika"&&id==="status"&&path.length===2)return result(await clikaStatus());
   if(method==="GET"&&resource==="operations"&&path.length===1)return result(ops.snapshot(svc.snapshot()));
   if(method==="GET"&&resource==="logs"&&path.length===1){svc.advanceDemo();ops.reconcile();return result(ops.logs(url));}
+  if(method==="GET"&&resource==="sensors"&&action==="training-readiness"&&path.length===3)return result(ops.trainingReadiness(id,timestamp(url.searchParams.get("from")),timestamp(url.searchParams.get("to"))));
+  if(method==="POST"&&resource==="sensors"&&action==="normal-ranges"&&path.length===3)return result(ops.approveNormalRange(id,await readJson()),201);
   if(method==="GET"&&resource==="edge"&&id==="recovery"&&path.length===2){authorize();const key=uuid(url.searchParams.get("daqUuid"));const snapshot=ops.snapshot(svc.snapshot());return result(snapshot.recoveries.filter(p=>p.daqUuid===key&&["pending","receiving"].includes(p.status)));}
   if(method==="POST"&&resource==="edge"&&id==="heartbeat"&&path.length===2){authorize();return result(ops.heartbeat(uuid(object(await readJson()).daqUuid)));}
   if(method==="POST"&&resource==="edge"&&id==="logs"&&path.length===2){authorize();ops.reconcile();const accepted=ops.ingestLogs(await readJson());ops.reconcile();return result(accepted,202);}

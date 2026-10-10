@@ -3,7 +3,7 @@ import {mkdirSync,writeFileSync,renameSync,readFileSync} from "node:fs";
 import {join} from "node:path";
 import {gzipSync,gunzipSync} from "node:zlib";
 import type {Store,Snapshot} from "../types.ts";
-import type {OperationsState,DeviceLog,RecoveryPolicy,RecoveryPlan,Dependency,Incident,DeviceImpact,OperationsSnapshot} from "../operations-types.ts";
+import type {OperationsState,DeviceLog,RecoveryPolicy,RecoveryPlan,Dependency,Incident,DeviceImpact,OperationsSnapshot,NormalRangeApproval} from "../operations-types.ts";
 import {FileRepository} from "./repository.ts";
 import {MaintenanceService} from "./service.ts";
 import {object,check,text,choice,numeric,timestamp,uuid} from "./validation.ts";
@@ -11,8 +11,10 @@ const now=()=>new Date().toISOString();
 export function state(store:Store):OperationsState {
   if(!store.operations){
     const dependencies:Dependency[]=store.mode==="demo"&&store.equipment.some(e=>e.id==="eq-1")?[{id:"demo-power-cool",from:"eq-1",to:"eq-2",kind:"power",required:true,description:"데모: 발전기가 냉각장치에 전원을 공급"},{id:"demo-power-pump",from:"eq-1",to:"eq-3",kind:"power",required:true,description:"데모: 발전기가 급수 펌프에 전원을 공급"}]:[];
-    store.operations={logs:[],connections:[],policies:[],recoveries:[],dependencies,incidents:[],locationInputs:[],locationAnalyses:[],demoOffline:[],demoForceOnline:[]};
-  }return store.operations;
+    store.operations={logs:[],connections:[],policies:[],recoveries:[],dependencies,incidents:[],locationInputs:[],locationAnalyses:[],normalRanges:[],demoOffline:[],demoForceOnline:[]};
+  }
+  store.operations.normalRanges??=[];
+  return store.operations;
 }
 export function addLog(store:Store,input:Omit<DeviceLog,"id">):DeviceLog {
   const log={...input,id:randomUUID()};const ops=state(store);ops.logs.push(log);ops.logs=ops.logs.slice(-10000);return log;
@@ -36,7 +38,7 @@ export class OperationsService {
   repo:FileRepository;
   constructor(repo=new FileRepository()){this.repo=repo;}
   reconcile(){
-    const original=this.repo.read();const ops=state(original);const serialized=JSON.stringify(ops);
+    const original=this.repo.read(),hadOperations=!!original.operations,ops=state(original),serialized=JSON.stringify(ops);
     for(const daq of original.daqs){
       const current=Date.now()-Date.parse(daq.lastSeen)<30000?"online":"offline";
       let connection=ops.connections.find(c=>c.daqUuid===daq.uuid);
@@ -47,7 +49,8 @@ export class OperationsService {
         else{connection.reconnectedAt=now();systemLog(original,"DAQ_RECONNECTED","엣지 디바이스 응답 복구",daq.uuid,"info",{disconnectedAt:connection.disconnectedAt});const policy=ops.policies.find(p=>p.daqUuid===daq.uuid)||this.defaultPolicy(daq.uuid);if(policy.scope!=="none"&&!ops.recoveries.some(p=>p.daqUuid===daq.uuid&&["pending","receiving"].includes(p.status)))this.createPlanInto(original,policy);}
       }
     }
-    if(serialized!==JSON.stringify(ops)||!this.repo.read().operations)this.repo.write(original);
+    if(serialized!==JSON.stringify(ops)||!hadOperations)this.repo.write(original);
+    return original;
   }
   defaultPolicy(daqUuid:string):RecoveryPolicy{return {daqUuid,scope:"checkpoint",raw:true,logs:false,from:null,to:null,maxMB:128};}
   savePolicy(key:string,input:unknown){const data=object(input);const policy:RecoveryPolicy={daqUuid:uuid(key),scope:choice(data.scope,["checkpoint","hour","day","custom","none"] as const,"복구 범위"),raw:data.raw!==false,logs:data.logs!==false,from:data.from?timestamp(data.from):null,to:data.to?timestamp(data.to):null,maxMB:numeric(data.maxMB??32,"복구 용량 MB",1,128)};check(policy.scope==="none"||policy.raw||policy.logs,"Raw 또는 Log 복구를 선택해 주세요.");if(policy.scope==="custom")check(policy.from&&policy.to&&policy.from<policy.to,"사용자 기간의 시작·종료를 확인해 주세요.");return this.repo.mutate(store=>{getBoard(store,key);const ops=state(store);ops.policies=ops.policies.filter(p=>p.daqUuid!==key);ops.policies.push(policy);systemLog(store,"RECOVERY_POLICY_UPDATED","복구 범위 설정 변경",key,"info",{scope:policy.scope,raw:policy.raw,logs:policy.logs});return policy;});}
@@ -97,12 +100,33 @@ export class OperationsService {
     const selectedLogs=logs?state(store).logs.filter(log=>log.daqUuid===key&&log.timestamp>=from&&log.timestamp<=to):[];for(const log of selectedLogs)records.push(JSON.stringify({type:"device_log",...log}));
     const manifest={type:"manifest",schema:"fieldlink.export.v1",createdAt:now(),daq:{uuid:daq.uuid,label:daq.label},range:{from,to},includes:{raw,logs},counts:{rawBatches:seen.size,logs:selectedLogs.length},calibrationNote:"raw arrays are source input values; apply each record calibration scale and offset for display values"};const body=[JSON.stringify(manifest),...records].join("\n")+"\n";check(Buffer.byteLength(body)<=128*1048576,"내보내기 결과가 128MB를 넘습니다. 기간을 나눠 주세요.",413,"EXPORT_LIMIT");const stamp=(value:string)=>value.replace(/[-:]/g,"").replace(/\.\d{3}Z$/,"Z");return{filename:`fieldlink-${key.slice(0,8)}-${stamp(from)}-${stamp(to)}.jsonl.gz`,bytes:gzipSync(Buffer.from(body)),manifest};
   }
+  trainingReadiness(sensorId:string,from:string,to:string){
+    from=timestamp(from);to=timestamp(to);check(from<to,"정상 기간의 시작·종료를 확인해 주세요.");
+    const store=this.repo.read(),sensor=store.sensors.find(row=>row.id===sensorId);check(sensor,"센서를 찾을 수 없습니다.",404);
+    const daq=getBoard(store,sensor.daqUuid),archive=this.exportRange(daq.uuid,from,to,true,false);
+    const rows=gunzipSync(archive.bytes).toString("utf8").trim().split("\n").slice(1).map(line=>JSON.parse(line)).filter(row=>row.type==="sensor_raw"&&row.sensorId===sensorId) as {timestamp:string;sps:number;raw:number[];source:"hot"|"recovery"}[];
+    const ordered=rows.sort((a,b)=>a.timestamp.localeCompare(b.timestamp));let segments=0,previousEnd=-Infinity;
+    for(const row of ordered){const start=Date.parse(row.timestamp),end=start+Math.max(0,row.raw.length-1)*1000/row.sps;if(start-previousEnd>60000)segments++;previousEnd=Math.max(previousEnd,end);}
+    const windowSeconds=sensor.type==="temperature"?60:1,rates=[...new Set(ordered.map(row=>row.sps))],windows=ordered.reduce((count,row)=>count+Math.floor(row.raw.length/(row.sps*windowSeconds)),0),recommendedWindows=60;
+    const hotBatches=rows.filter(row=>row.source==="hot").length,recoveredBatches=rows.length-hotBatches;
+    const approved=state(store).normalRanges.some(range=>range.sensorId===sensorId&&range.from===from&&range.to===to),requirements=[
+      {id:"raw",label:"승인 가능한 Raw 데이터",ok:windows>0,detail:windows?`${windows}개 윈도우 후보 (${windowSeconds}초 단위)` : "선택 기간에 완전한 Raw 윈도우가 없습니다."},
+      {id:"operator",label:"사용자 정상 승인",ok:approved,detail:approved?"정상 기간 및 데이터 무결성 확인 기록됨":"아래 확인란 동의 후 정상 기간으로 승인할 수 있습니다."},
+      {id:"reference",label:"MVP 참고 정보",ok:true,detail:`권장 ${recommendedWindows}개 · 현재 연속 구간 ${segments}개 · ${rates.length?rates.map(rate=>`${rate.toLocaleString("ko-KR")} SPS`).join(", "):"샘플레이트 없음"}`},
+    ];
+    return{sensorId,daqUuid:daq.uuid,from,to,rawBatches:rows.length,hotBatches,recoveredBatches,rawSamples:rows.reduce((sum,row)=>sum+row.raw.length,0),estimatedWindows:windows,recommendedWindows,contiguousSegments:segments,rates,windowSeconds,normalReviewState:approved?"approved":"unreviewed",dataReady:windows>0,trainingApiAvailable:false,requirements,note:"MVP에서는 선택 기간의 정상 여부와 데이터 무결성을 사용자가 확인합니다. 시스템은 Raw 존재 여부와 예상 윈도우 수만 기록합니다."};
+  }
+  approveNormalRange(sensorId:string,input:unknown):NormalRangeApproval{
+    const data=object(input),from=timestamp(data.from),to=timestamp(data.to);check(from<to,"정상 기간의 시작·종료를 확인해 주세요.");check(data.confirmNormal===true&&data.acceptIntegrity===true,"정상 운전 및 데이터 무결성 확인이 필요합니다.");
+    const readiness=this.trainingReadiness(sensorId,from,to);check(readiness.dataReady,"선택 기간에 승인할 수 있는 완전한 Raw 윈도우가 없습니다.",409,"NO_TRAINING_WINDOW");
+    return this.repo.mutate(store=>{const sensor=store.sensors.find(row=>row.id===sensorId);check(sensor,"센서를 찾을 수 없습니다.",404);const ranges=state(store).normalRanges,existing=ranges.find(range=>range.sensorId===sensorId&&range.from===from&&range.to===to);if(existing)return existing;const approval:NormalRangeApproval={id:randomUUID(),sensorId,daqUuid:sensor.daqUuid,from,to,rawBatches:readiness.rawBatches,rawSamples:readiness.rawSamples,estimatedWindows:readiness.estimatedWindows,integrityAccepted:true,approvedAt:now()};ranges.push(approval);systemLog(store,"NORMAL_RANGE_APPROVED","사용자가 정상 학습 기간을 승인했습니다.",sensor.daqUuid,"info",{approvalId:approval.id,sensorId,from,to,estimatedWindows:approval.estimatedWindows,integrityAccepted:true});return approval;});
+  }
   ingestLogs(input:unknown){const data=object(input),key=uuid(data.daqUuid);check(Array.isArray(data.logs)&&data.logs.length>0&&data.logs.length<=100,"logs는 1~100개여야 합니다.");const batchId=text(data.batchId,"로그 배치 ID",100),frameKey=`logs:${key}:${batchId}`;return this.repo.mutate(store=>{getBoard(store,key);if(store.receivedFrames.includes(frameKey))return{accepted:0,duplicate:true};const logs=(data.logs as unknown[]).map(l=>parseLog(store,key,l));logs.forEach(l=>addLog(store,l));store.receivedFrames.push(frameKey);store.receivedFrames=store.receivedFrames.slice(-10000);getBoard(store,key).lastSeen=now();return{accepted:logs.length,duplicate:false};});}
   logs(url:URL){const store=this.repo.read(),level=url.searchParams.get("level"),daq=url.searchParams.get("daq"),query=(url.searchParams.get("q")||"").toLowerCase(),from=url.searchParams.get("from"),to=url.searchParams.get("to"),offset=Number(url.searchParams.get("offset")||0),limit=Number(url.searchParams.get("limit")||50);check(Number.isInteger(offset)&&offset>=0&&Number.isInteger(limit)&&limit>=1&&limit<=100,"로그 페이지 범위를 확인해 주세요.");const all=state(store).logs.filter(l=>(!level||l.level===level)&&(!daq||l.daqUuid===daq)&&(!from||l.timestamp>=timestamp(from))&&(!to||l.timestamp<=timestamp(to))&&`${l.message} ${l.code} ${JSON.stringify(l.metadata)}`.toLowerCase().includes(query)).sort((a,b)=>b.timestamp.localeCompare(a.timestamp));return{total:all.length,offset,limit,items:all.slice(offset,offset+limit)};}
   saveDependency(input:unknown){const data=object(input),from=text(data.from,"상위 장비"),to=text(data.to,"하위 장비");return this.repo.mutate(store=>{check(store.equipment.some(e=>e.id===from)&&store.equipment.some(e=>e.id===to),"등록된 장비를 선택하세요.");check(from!==to,"자기 자신에 대한 의존관계는 허용하지 않습니다.");const ops=state(store);check(!ops.dependencies.some(e=>e.from===from&&e.to===to),"이미 등록된 관계입니다.",409);check(!descendants(to,ops.dependencies).includes(from),"순환 의존관계는 허용하지 않습니다.",409,"GRAPH_CYCLE");const edge:Dependency={id:randomUUID(),from,to,kind:choice(data.kind,["power","cooling","fluid","control","other"] as const,"의존 종류"),required:data.required!==false,description:text(data.description,"관계 설명",500,true)};ops.dependencies.push(edge);systemLog(store,"DEPENDENCY_CREATED","설비 의존관계 등록",null,"info",{from,to,kind:edge.kind});return edge;});}
   removeDependency(id:string){return this.repo.mutate(store=>{const ops=state(store);check(ops.dependencies.some(e=>e.id===id),"관계를 찾을 수 없습니다.",404);ops.dependencies=ops.dependencies.filter(e=>e.id!==id);systemLog(store,"DEPENDENCY_REMOVED","설비 의존관계 삭제",null,"info",{id});return{id};});}
-  private correlate(snapshot:Snapshot):DeviceImpact[]{
-      const store=this.repo.read(),ops=state(store),before=JSON.stringify(ops),critical=snapshot.equipment.filter(e=>e.severity==="critical").map(e=>e.id);
+  private correlate(snapshot:Snapshot,store=this.repo.read()):DeviceImpact[]{
+      const ops=state(store),before=JSON.stringify(ops),critical=snapshot.equipment.filter(e=>e.severity==="critical").map(e=>e.id);
       const roots=critical.filter(id=>!critical.some(other=>other!==id&&descendants(other,ops.dependencies,true).includes(id)));
       for(const incident of ops.incidents.filter(i=>["active","acknowledged"].includes(i.status)))if(!incident.rootEquipmentIds.some(id=>roots.includes(id))){incident.status="resolved";incident.resolvedAt=now();incident.updatedAt=now();systemLog(store,"INCIDENT_RESOLVED","상위 위험 진단 해제로 장애 사건 종료",null,"info",{incidentId:incident.id});}
       for(const root of roots){
@@ -117,6 +141,6 @@ export class OperationsService {
   acknowledgeIncident(id:string){return this.repo.mutate(store=>{const incident=state(store).incidents.find(i=>i.id===id);check(incident,"사건을 찾을 수 없습니다.",404);check(["active","acknowledged"].includes(incident.status),"종료된 사건입니다.",409);incident.status="acknowledged";incident.updatedAt=now();systemLog(store,"INCIDENT_ACKNOWLEDGED","장애 사건 확인 처리",null,"info",{incidentId:id});return incident;});}
   demoConnection(key:string,connected:boolean){check(this.repo.mode==="demo","데모 모드에서만 사용할 수 있습니다.",409);this.repo.mutate(store=>{const daq=getBoard(store,key),ops=state(store);ops.demoOffline=ops.demoOffline.filter(id=>id!==key);if(connected){ops.demoForceOnline=[...new Set([...ops.demoForceOnline,key])];daq.lastSeen=now();}else{ops.demoOffline.push(key);ops.demoForceOnline=ops.demoForceOnline.filter(id=>id!==key);daq.lastSeen=new Date(Date.now()-60000).toISOString();}systemLog(store,connected?"DEMO_RECONNECT":"DEMO_DISCONNECT",connected?"모의 재연결":"모의 연결 단절",key,connected?"info":"warning",{simulated:true});});this.reconcile();return{online:connected};}
   heartbeat(key:string){this.reconcile();this.repo.mutate(store=>{getBoard(store,key).lastSeen=now();});this.reconcile();return{daqUuid:key,lastSeen:now()};}
-  snapshot(snapshot:Snapshot):OperationsSnapshot{this.reconcile();const impacts=this.correlate(snapshot),store=this.repo.read(),ops=state(store);return{...ops,connections:ops.connections.map(c=>({...c,lastSeen:getBoard(store,c.daqUuid).lastSeen})),logs:ops.logs.slice(-50).reverse(),recoveries:ops.recoveries.slice(-100).reverse(),incidents:ops.incidents.slice(-100).reverse(),impacts,llm:{configured:!!process.env.CLIKA_MODEL,model:process.env.CLIKA_MODEL||null,protocol:"clika-chat"}};}
+  snapshot(snapshot:Snapshot):OperationsSnapshot{const store=this.reconcile(),impacts=this.correlate(snapshot,store),ops=state(store);return{...ops,connections:ops.connections.map(c=>({...c,lastSeen:getBoard(store,c.daqUuid).lastSeen})),logs:ops.logs.slice(-50).reverse(),recoveries:ops.recoveries.slice(-100).reverse(),incidents:ops.incidents.slice(-100).reverse(),impacts,llm:{configured:!!process.env.CLIKA_MODEL,model:process.env.CLIKA_MODEL||null,protocol:"clika-chat"}};}
   demoRecovery(id:string){const store=this.repo.read();check(store.mode==="demo","데모 모드에서만 가상 복구를 실행할 수 있습니다.",409);const plan=state(store).recoveries.find(p=>p.id===id);check(plan,"복구 요청을 찾을 수 없습니다.",404);const sensors=store.sensors.filter(s=>s.daqUuid===plan.daqUuid&&s.sps!=null);const at=new Date((Date.parse(plan.from)+Date.parse(plan.to))/2).toISOString();if(plan.nextSequence===0&&(plan.logs||plan.raw&&sensors.length)){this.receiveBatch(id,{sequence:0,batchId:`demo-${id}`,frame:plan.raw&&sensors.length?{readings:sensors.map(s=>({channel:s.channel,timestamp:at,value:1.23,sps:s.sps!,raw:[.1,.2,-.1,.15]}))}:null,logs:plan.logs?[{timestamp:at,level:"warning",code:"DEMO_OFFLINE_BUFFER",message:"모의 복구: 연결 단절 중 엣지에 저장한 로그",metadata:{simulated:true}}]:[]});}const updated=state(this.repo.read()).recoveries.find(p=>p.id===id)!;return this.completePlan(id,{edgeComplete:true,rawCoveredThrough:plan.to,logsCoveredThrough:plan.to,finalSequence:updated.nextSequence-1,missing:[]});}
 }

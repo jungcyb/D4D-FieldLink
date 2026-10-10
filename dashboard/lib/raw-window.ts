@@ -5,7 +5,8 @@ export interface RawSelection {
   expectedCount:number; limited:boolean;
   boundary:"gap"|"overlap"|"rate_change"|"history"|null;
 }
-/** Join only contiguous, equal-rate received batches. Never generate missing samples. */
+/** Join only contiguous, equal-rate received batches. The newest received sample,
+ * not wall-clock time, advances the window; a stopped stream remains visible. */
 export function selectRawWindow(readings:Reading[],seconds:number,maxSamples=65536):RawSelection{
   if(!Number.isFinite(seconds)||seconds<=0||!Number.isInteger(maxSamples)||maxSamples<1)throw new RangeError("유효한 조회 구간과 샘플 한도가 필요합니다.");
   const rows=readings.filter(row=>row.raw.length>0&&Number.isFinite(row.sps)&&row.sps>0&&Number.isFinite(Date.parse(row.timestamp))).toSorted((a,b)=>a.timestamp.localeCompare(b.timestamp));

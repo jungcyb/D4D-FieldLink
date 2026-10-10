@@ -29,7 +29,9 @@ export default function DaqControl({daq,sensors,onRefresh}:{daq:DaqView;sensors:
   }
   const mockSampling:DaqSampling={commonRateHz:daq.scanRateHz??null,totalRateHz:sensors.every(s=>s.sps!=null)?sensors.reduce((sum,s)=>sum+(s.sps??0),0):null,channels:sensors.map(s=>({channel:s.channel,sps:s.sps})),complete:true,mode:"per-channel",totalSource:"sum",updatedAt:daq.lastSeen};
   const declared=status?.channel_capabilities?.channels??daq.channels??[],groups=status?.channel_capabilities?.sampleRateGroups??daq.sampleRateGroups??[];
-  const sampling=status?.sampling??daq.sampling??(declared.length?samplingFromCapabilities({channels:declared}):mock?mockSampling:undefined),rows=channelRows(sampling,sensors),common=sampling?.commonRateHz??daq.scanRateHz??null;
+  const sampling=status?.sampling??daq.sampling??(declared.length?samplingFromCapabilities({channels:declared}):mock?mockSampling:undefined);
+  const declaredKeys=new Set(declared.map(channel=>channelKey(channel.id))),displaySensors=declared.length?sensors.filter(sensor=>declaredKeys.has(channelKey(sensor.channel))):sensors,undeclaredSensors=declared.length?sensors.length-displaySensors.length:0;
+  const rows=channelRows(sampling,displaySensors),common=sampling?.commonRateHz??daq.scanRateHz??null;
   const canControl=!mock&&!!status&&!error&&!busy&&status.capabilities.control;
   const canCommon=!mock&&!!status&&!error&&!busy&&status.capabilities.commonRate;
   const requestedCommon=commonDraft===null?common:Number(commonDraft),validCommon=requestedCommon!=null&&Number.isInteger(requestedCommon)&&requestedCommon>=10&&requestedCommon<=2000;
@@ -39,6 +41,7 @@ export default function DaqControl({daq,sensors,onRefresh}:{daq:DaqView;sensors:
   return <div className="daq-control"><div className="acquisition-state"><strong>데이터 수집</strong><span className={`badge ${mock?"normal":error?"warning":status?.acquiring?"normal":"unknown"}`}>{mock?"모의 데이터":error?"상태 확인 불가":status?status.acquiring?"수집 중":"수집 정지":"상태 확인 중"}</span></div>
     <div className="daq-total-rate"><span>전체 샘플레이트</span><strong>{total==null?"—":total.toLocaleString("ko-KR")}<small>samples/s</small></strong><p>{summary} · 채널마다 다른 SPS 지원</p></div>
     {pendingStreams>0&&<p className="daq-rate-note">설정된 채널 합계입니다. {pendingStreams}개 채널은 스트림 연동 대기 중이므로 실제 수신량과 다를 수 있습니다.</p>}
+    {undeclaredSensors>0&&<p className="daq-rate-note">보드가 현재 보고하지 않는 기존 센서 매핑 {undeclaredSensors}개는 채널 수와 샘플레이트 합계에서 제외했습니다.</p>}
     {groups.length>0?groups.map(group=>{
       const requested=groupDrafts[group.id]===undefined?group.currentHz:Number(groupDrafts[group.id]),valid=rateInGroup(group,requested);
       return <form key={group.id} className="daq-common-rate" onSubmit={e=>{e.preventDefault();if(canCommon&&valid)setConfirm({action:"rate",groupId:group.id,rate:requested});}}>

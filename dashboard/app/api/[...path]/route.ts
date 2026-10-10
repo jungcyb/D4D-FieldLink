@@ -10,6 +10,11 @@ import { check,object } from "@/lib/server/validation";
 
 const headers = { "Cache-Control": "no-store" };
 const result = (data: unknown, status = 200) => Response.json({ data }, { status, headers });
+function removeStoredPhoto(directory:string,filename:string|null):void{
+  if(!filename||!/^[0-9a-f-]{36}\.(png|jpg|webp)$/.test(filename))return;
+  try{unlinkSync(join(directory,filename));}
+  catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")console.warn("Failed to remove sensor photo:",error);}
+}
 
 async function boundedBytes(request: Request, max: number): Promise<Uint8Array> {
   check(Number(request.headers.get("content-length") || 0) <= max, "요청 용량이 너무 큽니다.", 413, "PAYLOAD_TOO_LARGE");
@@ -102,6 +107,11 @@ async function dispatch(request: Request, context: { params: Promise<{ path: str
     if (method === "POST" && resource === "sensors" && path.length === 1) return result(svc.saveSensor(await jsonBody(request)), 201);
     if (method === "PATCH" && resource === "sensors" && action === "calibration" && path.length === 3) return result(svc.calibrateSensor(id, await jsonBody(request)));
     if (method === "PATCH" && resource === "sensors" && path.length === 2) return result(svc.saveSensor(await jsonBody(request), id));
+    if (method === "DELETE" && resource === "sensors" && path.length === 2) {
+      const sensor=svc.removeSensor(id);
+      removeStoredPhoto(join(svc.repository.directory,"photos",svc.repository.mode),sensor.photo);
+      return result({id:sensor.id});
+    }
     if (method === "POST" && resource === "sensors" && action === "photo" && path.length === 3) {
       const existing = svc.repository.read().sensors.find(s => s.id === id);
       check(existing, "센서를 찾을 수 없습니다.", 404);
@@ -120,7 +130,7 @@ async function dispatch(request: Request, context: { params: Promise<{ path: str
       mkdirSync(directory, { recursive: true });
       const filename = `${randomUUID()}.${extension}`;
       const target = join(directory, filename); writeFileSync(target, buffer);
-      try { const sensor = svc.setPhoto(id, filename); return result(sensor); }
+      try { const sensor = svc.setPhoto(id, filename); removeStoredPhoto(join(svc.repository.directory,"photos",svc.repository.mode),existing.photo); return result(sensor); }
       catch (error) { unlinkSync(target); throw error; }
     }
     if (method === "POST" && resource === "diagnoses" && action === "acknowledge" && path.length === 3) return result(svc.acknowledge(id));

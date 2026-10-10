@@ -47,6 +47,22 @@ test("rejects duplicate channels and missing/invalid board UUIDs", t => {
   assert.throws(() => service.upsertBoard({ ...boardResponse, uuid: undefined }), ApiError);
   assert.throws(() => service.upsertBoard({ ...boardResponse, port: 2.5 }), ApiError);
 });
+test("sensor metadata is editable while its DAQ channel and recorded history remain protected",t=>{
+  const {service,sensor}=setup(t);
+  const edited=service.saveSensor({...sensor,name:"편집된 센서",position:"모터 상단",unit:"g"},sensor.id);
+  assert.equal(edited.name,"편집된 센서");assert.equal(edited.channel,sensor.channel);
+  assert.throws(()=>service.saveSensor({...edited,channel:"CH-2"},sensor.id),(error:unknown)=>error instanceof ApiError&&error.code==="IMMUTABLE_CHANNEL");
+  const removable=service.saveSensor({daqUuid:boardResponse.uuid,channel:"CH-2",name:"임시 센서",type:"analog",position:"시험 위치",unit:"V",sps:10});
+  assert.equal(service.removeSensor(removable.id).id,removable.id);assert.equal(service.snapshot().sensors.some(row=>row.id===removable.id),false);
+  service.ingest({daqUuid:boardResponse.uuid,readings:[{channel:sensor.channel,timestamp:new Date().toISOString(),value:1,sps:1000,raw:[1]}]});
+  assert.throws(()=>service.removeSensor(sensor.id),(error:unknown)=>error instanceof ApiError&&error.code==="HAS_HISTORY");
+});
+test("rich DAQ capabilities reject unknown new mappings and mark stale mappings offline",t=>{
+  const {service,sensor}=setup(t);
+  service.upsertBoard({...boardResponse,channelCount:1,channels:[{id:"CH0",label:"CH0",adc:"ADS8688",adcChannel:"AIN0",sampleRateHz:1000,inputUnit:"V",rateGroupId:"scan",streamAvailable:true}],sampleRateGroups:[{id:"scan",label:"scan",channelIds:["CH0"],currentHz:1000,writable:true,minHz:10,maxHz:2000,stepHz:1}]});
+  assert.equal(service.snapshot().sensors.find(row=>row.id===sensor.id)?.online,false);
+  assert.throws(()=>service.saveSensor({daqUuid:boardResponse.uuid,channel:"CH9",name:"없는 채널",type:"analog",position:"시험",unit:"V"}),(error:unknown)=>error instanceof ApiError&&error.code==="UNKNOWN_CHANNEL");
+});
 test("ingestion is atomic, frame retries deduplicate, offline replay preserves newest sample", t => {
   const { service, repo, sensor } = setup(t); const at = new Date().toISOString();
   const frame = { daqUuid: boardResponse.uuid, frameId: "f-1", readings: [{ channel: "CH-1", timestamp: at, value: 2.7, sps: 1000, raw: [1,2,3] }], diagnoses: [{ channel: "CH-1", timestamp: at, severity: "critical", title: "마모 징후", description: "엣지 결과", confidence: .9, rulHours: 0, model: "edge-v1" }] };
@@ -73,9 +89,9 @@ test("affine calibration changes API values without changing stored samples", t 
 });
 test("external hot telemetry keeps a bounded number of raw batches", t => {
   const { service, repo, sensor } = setup(t);
-  for (let i = 0; i < 15; i++) service.ingest({ daqUuid: boardResponse.uuid, readings: [{ channel: "CH-1", timestamp: new Date(Date.now() + i).toISOString(), value: i, sps: 1000, raw: [i] }] });
+  for (let i = 0; i < 125; i++) service.ingest({ daqUuid: boardResponse.uuid, readings: [{ channel: "CH-1", timestamp: new Date(Date.now() + i).toISOString(), value: i, sps: 1000, raw: [i] }] });
   const readings = repo.read().readings.filter(reading => reading.sensorId === sensor.id);
-  assert.equal(readings.length, 12); assert.equal(Math.min(...readings.map(reading => reading.value)), 3);
+  assert.equal(readings.length, 120); assert.equal(Math.min(...readings.map(reading => reading.value)), 5);
 });
 test("task workflow pins diagnosis and prevents duplicate active tasks", t => {
   const { service, equipment } = setup(t);

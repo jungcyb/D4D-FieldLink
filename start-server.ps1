@@ -43,6 +43,7 @@ $env:DASHBOARD_URL = "http://127.0.0.1:$Port"
 $env:BOARD_DISCOVERY_ADDRESS = $DiscoveryAddress
 $env:DAQ_DISCOVERY_ADDRESS = $DiscoveryAddress
 $env:BOARD_HOST = $BoardHost
+if (-not $env:FILE_REPOSITORY_WRITE_DEBOUNCE_MS) { $env:FILE_REPOSITORY_WRITE_DEBOUNCE_MS = '500' }
 
 Write-Host 'Building FIELDLINK dashboard for LAN access...'
 Push-Location (Join-Path $repoRoot 'dashboard')

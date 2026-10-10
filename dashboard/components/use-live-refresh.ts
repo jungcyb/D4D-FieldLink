@@ -10,15 +10,17 @@ export function useLiveRefresh(load: (signal: AbortSignal) => Promise<void>, { p
   useEffect(() => {
     if (paused) return;
     const loop = refreshLoop(load);
-    const visible = () => document.hidden ? Promise.resolve() : loop.request();
+    let connected=false,lastFallback=0;
+    const visible = () => {if(document.hidden)return Promise.resolve();lastFallback=Date.now();return loop.request();};
     request.current = visible;
     const unsubscribe = subscribeLive(notice => {
+      connected=notice.type!=="disconnected";
       setLive(notice.type !== "disconnected");
       if (notice.type !== "update" || !logs || notice.topic !== "telemetry") visible();
     });
     // Also repairs missed events and time-derived offline status. A stalled SSE
     // proxy cannot leave the screen showing an old alarm indefinitely.
-    const timer = setInterval(visible, 1000);
+    const timer = setInterval(()=>{if(Date.now()-lastFallback>=(connected?5000:1000))void visible();},1000);
     document.addEventListener("visibilitychange", visible);
     window.addEventListener("online", visible);
     visible();

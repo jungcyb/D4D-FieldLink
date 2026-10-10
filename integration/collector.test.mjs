@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import dgram from "node:dgram";
 import { crc32 } from "node:zlib";
-import { anomalyEvents, discover, discoverBoards, decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter } from "./collector.mjs";
+import { anomalyEvents, discover, discoverBoards, decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter, LiveSampleClock, batchFrameCount } from "./collector.mjs";
 
 test("ADS8688 straight-binary conversion preserves polarity", () => {
   assert.equal(rawCodeToVolts(0), -10.24); assert.equal(rawCodeToVolts(32768), 0); assert.ok(rawCodeToVolts(65535) > 10.239);
@@ -29,6 +29,14 @@ test("timestamped frame decoder returns record, time and eight channels", () => 
   const decoded = decodeFrame(payload, true); assert.equal(decoded.recordId, BigInt(42)); assert.equal(decoded.scanRate, 1000); assert.equal(decoded.samples.length, 8); assert.equal(decoded.samples[0], 0); assert.equal(decoded.timestamp, "2025-10-09T08:53:20.123Z");
 });
 
+test("live ADS clock removes transport bursts without changing archived timestamps",()=>{
+  const clock=new LiveSampleClock(),base=BigInt(1_760_000_000_000_000_000);
+  const make=(sourceUs,receivedNs,archived=false)=>({source:'ads8688',sourceUs:BigInt(sourceUs),receivedNs:base+BigInt(receivedNs),timestamp:new Date(Number((base+BigInt(receivedNs))/1000000n)).toISOString(),archived});
+  const rows=[clock.normalize(make(1_000_000,0)),clock.normalize(make(1_001_000,0)),clock.normalize(make(1_002_000,20_000_000))];
+  assert.deepEqual(rows.map(row=>Date.parse(row.timestamp)-Date.parse(rows[0].timestamp)),[0,1,2]);
+  const archived=make(500_000,99_000_000,true);assert.equal(clock.normalize(archived).timestamp,archived.timestamp);
+});
+
 test("recovery reports only unavailable raw boundaries", () => {
   const plan = { raw: true, logs: false, from: "2026-01-01T00:00:00.000Z", to: "2026-01-01T00:00:10.000Z" };
   assert.deepEqual(recoveryGaps(plan, "2026-01-01T00:00:01.000Z", "2026-01-01T00:00:09.000Z"), [
@@ -53,7 +61,7 @@ test("wire decoder accepts actual variable sample rates and rejects zero", () =>
   }
 });
 class CapturingWriter extends BatchWriter {
-  constructor(){super("test",{});this.batches=[];}
+  constructor(batchMs=1000){super("test",{},null,batchMs);this.batches=[];}
   closeBatch(){if(this.frames.length)this.batches.push(this.frames);this.frames=[];}
 }
 const rateFrame=(id,rate)=>({recordId:BigInt(id),timestamp:new Date(1760000000000+id*1000/rate).toISOString(),scanRate:rate,samples:Array(8).fill(id),archived:false});
@@ -71,6 +79,7 @@ test("collector uses actual SPS for batch size and splits rate changes and recor
   for(const rate of [250,1800]){const writer=new CapturingWriter();for(let i=0;i<rate+3;i++)writer.add(rateFrame(i,rate));writer.closeBatch();assert.deepEqual(writer.batches.map(b=>b.length),[rate,3]);assert.ok(writer.batches.every(b=>b.every(f=>f.scanRate===rate)));}
   const writer=new CapturingWriter();writer.add(rateFrame(1,250));writer.add(rateFrame(2,250));writer.add(rateFrame(3,1800));writer.add(rateFrame(8,1800));writer.closeBatch();assert.deepEqual(writer.batches.map(b=>b.map(f=>Number(f.recordId))),[[1,2],[3],[8]]);
 });
+test("dashboard persistence batches target one second independently of SPS",()=>{assert.equal(batchFrameCount(1500),1500);assert.equal(batchFrameCount(104),104);assert.equal(batchFrameCount(3),3);});
 test("collector keeps high-rate batches inside the backend raw capacity",()=>{
   const writer=new CapturingWriter();for(let i=0;i<5000;i++)writer.add(rateFrame(i,10000));writer.closeBatch();assert.deepEqual(writer.batches.map(b=>b.length),[4096,904]);
 });

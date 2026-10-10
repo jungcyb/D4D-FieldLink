@@ -25,3 +25,8 @@ test("partial history, fractional SPS, rounded timestamps and hard memory limit 
   const trimmed=selectRawWindow([batch(0),batch(1)],2,1500);assert.equal(trimmed.raw.length,1500);assert.equal(trimmed.limited,true);assert.equal(trimmed.timestamp,new Date(start+500).toISOString());
   assert.equal(selectRawWindow([],2).sps,null);assert.throws(()=>selectRawWindow([],0));
 });
+test("wall-clock time alone never evicts a stopped stream",()=>{
+  const rows=[batch(0),batch(1),batch(2)],before=selectRawWindow(rows,2),original=Date.now;
+  Date.now=()=>start+24*60*60*1000;
+  try{assert.deepEqual(selectRawWindow(rows,2),before);}finally{Date.now=original;}
+});
