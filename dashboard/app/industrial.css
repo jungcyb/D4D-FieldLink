@@ -91,3 +91,10 @@ td small,.priority-meta,.priority-note,.priority-item p,.network-description{fon
 @media(max-width:1100px){.channel-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.channel-title>span{display:none}.monitor-aside{grid-template-columns:1fr 1fr}.monitor-aside>section:last-child{grid-column:1/-1}}
 @media(max-width:760px){.main-shell{margin-left:0}.main-shell main{padding:20px 12px}.topbar{padding:0 14px}.page-heading h1{font-size:23px}.channel-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding:0 10px 10px}.monitor-chart{padding:10px}.monitor-aside{grid-template-columns:1fr}.monitor-aside>section:last-child{grid-column:auto}.plot-controls{padding:8px}.plot-controls .plot-expand{margin-left:0}.plot-readout{font-size:11px;gap:10px;flex-wrap:wrap;min-height:45px}.daq-grid{grid-template-columns:minmax(0,1fr)}.chart-toolbar{align-items:flex-start}.toolbar-actions{width:100%}.monitor-reading>strong{font-size:26px}.panel-heading{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* Keep log severity, timestamp, message and disclosure aligned across rows. */
+.event-log-list{overflow-x:auto}
+.event-log>summary{display:grid;grid-template-columns:72px 180px minmax(0,1fr) 16px;gap:14px;min-width:620px}
+.event-log>summary>.log-level{width:72px;text-align:center;white-space:nowrap;justify-self:start}
+.event-log>summary>.log-timestamp{white-space:nowrap}
+.event-log>summary>div{min-width:0;order:0;overflow-wrap:anywhere}

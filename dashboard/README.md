@@ -11,6 +11,8 @@ cd C:\Users\frin0\Desktop\Projects\D4D\D4D-FieldLink\dashboard
 npm run dev
 ```
 
+개발 서버는 `next dev --webpack`으로 실행합니다. 현재 설치된 Next.js/Turbopack 조합에서 재컴파일·새로고침이 반복되어 화면 초기화가 끝나지 않는 현상을 피하기 위한 설정입니다. `next build` 및 운영 서버의 실행 방식은 기존 설정을 사용합니다.
+
 기본 Node가 오래된 Windows 환경에서는 `./dev.ps1`을 실행하면 설치된 Node와 Codex 제공 런타임 중 지원 버전을 찾아 사용합니다. 접속: http://localhost:3000
 
 ```powershell
