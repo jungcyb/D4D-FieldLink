@@ -1,0 +1,20 @@
+{
+  "equipmentId": "3032847b-e5fa-4ce8-8574-cb32c1c2d3e1",
+  "sensorId": "dd4361bf-99b9-4c0e-9a02-c765d7a3ce50",
+  "temperatureId": "ad986ea2-cf53-4727-898e-4cb753a7c464",
+  "model": "Qwen2.5-0.5B-Instruct",
+  "inputTokens": 1108,
+  "budget": 2944,
+  "sources": 4,
+  "answer": "예상 수명 (RUL): 120시간\n\n분류 점수: \n- 이상 점수: 0.62\n- 임계값: 0.59\n- 미보정 점수: 0.1\n- 보정 미보정 점수: 0.4\n- 미래 고장 확률이 아님\n\n이미지 원본: \n- 센서 베어링 진동: [이미지]\n- 센서 출구 온도: [이미지]\n\n이미지 정보: \n- 베어링 진동: [이미지]\n- 출구 온도: [이미지]",
+  "variableRate": {
+    "latestSps": 1800,
+    "sampleCount": 900,
+    "spanMs": 499.44444444444446,
+    "preservedRates": [
+      1000,
+      250,
+      1800
+    ]
+  }
+}
