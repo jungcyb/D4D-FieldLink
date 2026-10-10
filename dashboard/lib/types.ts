@@ -5,14 +5,16 @@ export type SensorType = "vibration" | "temperature" | "current" | "analog";
 export type TaskStatus = "pending" | "in_progress" | "completed";
 export type Priority = "critical" | "high" | "normal";
 export interface Calibration { scale: number; offset: number; inputUnit: string; updatedAt: string | null }
+export interface DaqChannel { id: string; label: string; adc: string; adcChannel: string; sampleRateHz: number; inputUnit: string; rateGroupId: string; streamAvailable: boolean }
+export interface SampleRateGroup { id: string; label: string; channelIds: string[]; currentHz: number; writable: boolean; minHz?: number; maxHz?: number; stepHz?: number }
 export interface Equipment { id: string; name: string; category: string; location: string; description: string; createdAt: string }
-export interface Daq { uuid: string; label: string; ip: string; port: number; equipmentId: string | null; lastSeen: string; source: Mode; createdAt: string }
+export interface Daq { uuid: string; label: string; ip: string; port: number; equipmentId: string | null; lastSeen: string; source: Mode; createdAt: string; channelCount?: number; channels?: DaqChannel[]; sampleRateGroups?: SampleRateGroup[] }
 export interface Sensor { id: string; daqUuid: string; channel: string; name: string; type: SensorType; position: string; unit: string; sps: number; calibration: Calibration; photo: string | null; createdAt: string }
 export interface Reading { id: string; sensorId: string; timestamp: string; value: number; sourceValue?: number; sps: number; raw: number[]; source: Mode }
 export interface Diagnosis { id: string; sensorId: string; timestamp: string; severity: Severity; title: string; description: string; confidence: number | null; rulHours: number | null; model: string; source: Mode; acknowledgedAt: string | null }
 export interface Task { id: string; equipmentId: string; diagnosisId: string | null; title: string; priority: Priority; assignee: string; status: TaskStatus; dueDate: string | null; notes: string; createdAt: string; completedAt: string | null }
 export interface Store { operations?: OperationsState; version: 1; mode: Mode; lastDemoTick: number; equipment: Equipment[]; daqs: Daq[]; sensors: Sensor[]; readings: Reading[]; diagnoses: Diagnosis[]; tasks: Task[]; receivedFrames: string[] }
-export interface BoardResponse { uuid: string; label: string; ip: string; port: number }
+export interface BoardResponse { uuid: string; label: string; ip: string; port: number; channelCount?: number; channels?: DaqChannel[]; sampleRateGroups?: SampleRateGroup[] }
 export interface EdgeReading { channel: string; timestamp: string; value: number; sps: number; raw: number[] }
 export interface EdgeDiagnosis { channel: string; timestamp?: string; severity: Severity; title: string; description: string; confidence?: number | null; rulHours?: number | null; model: string }
 export interface EdgeFrame { daqUuid: string; frameId?: string; readings: EdgeReading[]; diagnoses?: EdgeDiagnosis[] }

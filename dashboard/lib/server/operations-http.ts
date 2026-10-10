@@ -15,8 +15,13 @@ export async function operationsHttp({request,url,path,svc,readJson,bytes,author
     try {
       const status=await controlDaq(board,command);
       if(command) svc.repository.mutate(store=>{
-        for(const sensor of store.sensors.filter(s=>s.daqUuid===key))sensor.sps=status.scan_rate_hz;
-        systemLog(store,"DAQ_ACQUISITION_CHANGED",command.action==="rate"?`샘플레이트 변경: 채널당 ${status.scan_rate_hz} SPS`:status.acquiring?"보드 데이터 수집 시작":"보드 데이터 수집 정지",key,"info",{action:command.action,acquiring:status.acquiring,sps:status.scan_rate_hz});
+        const capabilities=status.channel_capabilities;
+        for(const sensor of store.sensors.filter(s=>s.daqUuid===key)) {
+          const channel=capabilities?.channels.find(item=>item.id===sensor.channel);
+          if(channel) sensor.sps=channel.sampleRateHz;
+        }
+        const group=command.action==="rate"?capabilities?.sampleRateGroups.find(item=>item.id===command.groupId):null;
+        systemLog(store,"DAQ_ACQUISITION_CHANGED",command.action==="rate"?`샘플레이트 변경: ${group?.label||command.groupId} ${command.rate} SPS`:status.acquiring?"보드 데이터 수집 시작":"보드 데이터 수집 정지",key,"info",{action:command.action,acquiring:status.acquiring,...(command.action==="rate"?{groupId:command.groupId,sps:command.rate}:{})});
       });
       return result(status);
     } catch(error) {

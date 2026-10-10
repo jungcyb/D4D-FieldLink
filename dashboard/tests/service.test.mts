@@ -91,6 +91,15 @@ test("ADS8688 UDP discovery response decodes UUID, address and TCP port", () => 
   assert.deepEqual(decodeDiscoveryResponse(packet, "192.168.0.240", nonce), { uuid: boardResponse.uuid, label: "sk-am64b", ip: "192.168.0.240", port: 8765 });
   assert.equal(decodeDiscoveryResponse(packet, "192.168.0.240", BigInt(999)), null);
 });
+test("discovery v2 carries channel rates and writable rate groups", () => {
+  const nonce = BigInt(42), capability = Buffer.from(JSON.stringify({channelCount:2,channels:[
+    {id:"CH0",label:"ADS8688 CH0",adc:"ADS8688",adcChannel:"AIN0",sampleRateHz:1000,inputUnit:"V",rateGroupId:"ads8688.scan",streamAvailable:true},
+    {id:"ADS1263-AIN0_AIN1",label:"ADS1263 AIN0–AIN1",adc:"ADS1263",adcChannel:"AIN0-AIN1",sampleRateHz:400,inputUnit:"code",rateGroupId:"ads1263.adc1",streamAvailable:false},
+  ],sampleRateGroups:[{id:"ads8688.scan",label:"ADS8688 공통",channelIds:["CH0"],currentHz:1000,writable:true,minHz:10,maxHz:2000,stepHz:1},{id:"ads1263.adc1",label:"ADS1263 ADC1",channelIds:["ADS1263-AIN0_AIN1"],currentHz:400,writable:false}]}));
+  const hostname=Buffer.from("sk-am64b"),model=Buffer.from("AM6442-SK+ADS8688+ADS1263"),packet=Buffer.alloc(38+hostname.length+model.length+capability.length);
+  packet.write("A8DR");packet.writeUInt16BE(2,4);packet.writeBigUInt64BE(nonce,8);Buffer.from("11111111222243338444555555555555","hex").copy(packet,16);packet.writeUInt16BE(8765,32);packet[34]=hostname.length;packet[35]=model.length;packet.writeUInt16BE(capability.length,36);hostname.copy(packet,38);model.copy(packet,38+hostname.length);capability.copy(packet,38+hostname.length+model.length);
+  const result=decodeDiscoveryResponse(packet,"192.168.0.240",nonce);assert.equal(result?.channelCount,2);assert.equal(result?.channels?.[1].sampleRateHz,400);assert.deepEqual(result?.sampleRateGroups?.filter(group=>group.writable).map(group=>group.channelIds),[["CH0"]]);
+});
 test("demo discovery repeats do not duplicate UUIDs and demo data is separated from real data", async t => {
   const directory = mkdtempSync(join(tmpdir(), "fieldlink-test-"));
   t.after(() => { assert.ok(basename(directory).startsWith("fieldlink-test-")); rmSync(directory, { recursive: true, force: true }); });

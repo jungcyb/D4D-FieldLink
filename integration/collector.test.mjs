@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { crc32 } from "node:zlib";
-import { decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps } from "./collector.mjs";
+import { decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps } from "./collector.mjs";
 
 test("ADS8688 straight-binary conversion preserves polarity", () => {
   assert.equal(rawCodeToVolts(0), -10.24); assert.equal(rawCodeToVolts(32768), 0); assert.ok(rawCodeToVolts(65535) > 10.239);
@@ -27,4 +27,10 @@ test("backlog replay runs only for an explicit raw recovery", () => {
   assert.equal(recoveryCursor({ raw: false }, BigInt(10)), null);
   assert.equal(recoveryCursor({ raw: true }, BigInt(10)), BigInt(9));
   assert.equal(recoveryCursor({ raw: true }, null), null);
+});
+
+test("discovery v2 exposes heterogeneous channel capabilities", () => {
+  const nonce=BigInt(7),hostname=Buffer.from("sk"),model=Buffer.from("dual-adc"),capability=Buffer.from(JSON.stringify({channelCount:2,channels:[["CH0","ADS8688 CH0","ADS8688","AIN0",1000,"V","ads8688.scan",true],["ADS1263-AIN0_AIN1","ADS1263 AIN0–AIN1","ADS1263","AIN0-AIN1",400,"code","ads1263.adc1",false]],sampleRateGroups:[["ads8688.scan","ADS8688 공통",["CH0"],1000,true,10,2000,1]]})),packet=Buffer.alloc(38+hostname.length+model.length+capability.length);
+  packet.write("A8DR");packet.writeUInt16BE(2,4);packet.writeBigUInt64BE(nonce,8);Buffer.alloc(16,1).copy(packet,16);packet.writeUInt16BE(8765,32);packet[34]=hostname.length;packet[35]=model.length;packet.writeUInt16BE(capability.length,36);hostname.copy(packet,38);model.copy(packet,38+hostname.length);capability.copy(packet,38+hostname.length+model.length);
+  const result=decodeDiscoveryResponse(packet,"192.168.0.240",nonce);assert.equal(result.channelCapabilities.channelCount,2);assert.equal(result.channelCapabilities.channels[1].id,"ADS1263-AIN0_AIN1");
 });

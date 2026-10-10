@@ -1,14 +1,16 @@
 import net from "node:net";
-import type { Daq } from "../types.ts";
+import type { Daq, DaqChannel, SampleRateGroup } from "../types.ts";
 import { ApiError, check, object } from "./validation.ts";
-export interface AcquisitionStatus { uuid: string; acquiring: boolean; scan_rate_hz: number; frames_total: number; sequence_gaps_total: number }
-export type AcquisitionCommand = { action: "start" | "stop" } | { action: "rate"; rate: number };
+import { normalizeCapabilities } from "./adapters.ts";
+export interface AcquisitionStatus { uuid: string; acquiring: boolean; scan_rate_hz: number; frames_total: number; sequence_gaps_total: number; channel_capabilities?: { channelCount: number; channels: DaqChannel[]; sampleRateGroups: SampleRateGroup[] } }
+export type AcquisitionCommand = { action: "start" | "stop" } | { action: "rate"; groupId: string; rate: number };
 export function parseCommand(input: unknown): AcquisitionCommand {
   const data = object(input);
   check(["start", "stop", "rate"].includes(String(data.action)), "수집 시작·정지·샘플레이트 변경 중 선택하세요.");
   if (data.action === "rate") {
-    check(typeof data.rate === "number" && Number.isInteger(data.rate) && data.rate >= 10 && data.rate <= 2000, "샘플레이트는 채널당 10~2,000 SPS의 정수여야 합니다.");
-    return { action: "rate", rate: data.rate };
+    check(typeof data.groupId === "string" && data.groupId.length > 0 && data.groupId.length <= 80, "샘플레이트 그룹을 선택하세요.");
+    check(typeof data.rate === "number" && Number.isFinite(data.rate) && data.rate > 0 && data.rate <= 1000000, "샘플레이트 값이 올바르지 않습니다.");
+    return { action: "rate", groupId: data.groupId, rate: data.rate };
   }
   return { action: data.action as "start" | "stop" };
 }
@@ -53,13 +55,22 @@ export async function controlDaq(daq: Daq, command?: AcquisitionCommand): Promis
     check(hello.uuid === daq.uuid, "접속 주소의 보드 UUID가 다릅니다. 명령을 전송하지 않았습니다.", 409);
     if (command) {
       check(Array.isArray(hello.capabilities) && hello.capabilities.includes(command.action === "rate" ? "sample_rate" : "acquisition_control"), "보드가 이 제어 기능을 지원하지 않습니다.", 409);
-      const payload = command.action === "rate" ? Buffer.alloc(4) : Buffer.alloc(0);
-      if (command.action === "rate") payload.writeUInt32BE(command.rate);
-      await request(command.action === "start" ? 3 : command.action === "stop" ? 4 : 5, payload);
+      let payload = Buffer.alloc(0), messageType: number = command.action === "start" ? 3 : 4;
+      if (command.action === "rate") {
+        const capabilities = normalizeCapabilities(hello.channel_capabilities);
+        check(capabilities, "보드가 채널별 샘플레이트 정보를 제공하지 않습니다.", 409);
+        const group = capabilities.sampleRateGroups.find(item => item.id === command.groupId);
+        check(group?.writable, "선택한 채널 집합의 샘플레이트는 변경할 수 없습니다.", 409);
+        check(command.rate >= (group.minHz || command.rate) && command.rate <= (group.maxHz || command.rate) && (group.stepHz == null || Number.isInteger((command.rate - (group.minHz || 0)) / group.stepHz)), `${group.label} 허용 범위를 확인하세요.`, 409);
+        payload = Buffer.from(JSON.stringify({ groupId: command.groupId, rateHz: command.rate }));
+        messageType = 12;
+      }
+      await request(messageType, payload);
     }
     const status = object(await request(2));
     check(status.uuid === daq.uuid && typeof status.acquiring === "boolean" && typeof status.scan_rate_hz === "number" && Number.isFinite(status.scan_rate_hz), "보드 수집 상태를 확인할 수 없습니다.", 502);
-    if (command) check(command.action === "rate" ? status.scan_rate_hz === command.rate : status.acquiring === (command.action === "start"), "명령 후 보드 상태가 일치하지 않습니다. 현재 상태를 다시 확인하세요.", 502);
+    if (status.channel_capabilities != null) check(normalizeCapabilities(status.channel_capabilities), "보드의 채널 상태 형식이 올바르지 않습니다.", 502);
+    if (command) check(command.action === "rate" ? normalizeCapabilities(status.channel_capabilities)?.sampleRateGroups.find(group => group.id === command.groupId)?.currentHz === command.rate : status.acquiring === (command.action === "start"), "명령 후 보드 상태가 일치하지 않습니다. 현재 상태를 다시 확인하세요.", 502);
     return status as unknown as AcquisitionStatus;
   } catch (error) {
     if (error instanceof ApiError) throw error;

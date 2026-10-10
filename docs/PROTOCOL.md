@@ -4,7 +4,7 @@
 
 ## UDP 검색
 
-요청은 `magic[4]="A8DQ", version:u16, reserved:u16, nonce:u64`의 16 bytes이다. 보드는 다음 응답을 요청 송신 주소로 돌려준다.
+요청은 `magic[4]="A8DQ", version:u16, reserved:u16, nonce:u64`의 16 bytes이다. 신규 클라이언트는 discovery version `2`를 요청한다. 보드는 다음 응답을 요청 송신 주소로 돌려준다.
 
 ```text
 magic[4]="A8DR"
@@ -15,11 +15,13 @@ uuid[16]
 tcp_port:u16
 hostname_length:u8
 model_length:u8
+capabilities_length:u16  # version 2에서만 존재
 hostname[hostname_length]
 model[model_length]
+capabilities_json[capabilities_length]
 ```
 
-클라이언트는 nonce가 요청과 같은 응답만 수락하고, UUID를 보드 식별자로 사용한다.
+capability JSON은 `channelCount`, 채널별 현재 SPS, 그리고 같은 속도로 함께 변경되는 그룹을 포함한다. UDP 단일 datagram 크기를 유지하기 위해 채널 배열은 `[id,label,adc,input,sps,inputUnit,groupId,streamAvailable]`, 그룹 배열은 `[id,label,channelIds,currentSps,writable,min,max,step]` 순서다. 각 그룹의 `writable`, 허용 범위와 `channelIds`가 UI 제어 가능 여부의 기준이다. 현재 ADS8688 CH0–CH7은 하나의 공통 가변 그룹이고 ADS1263의 두 차동 입력은 독립 고정 그룹으로 보고한다. version 1 요청에는 종전 응답을 반환한다. 클라이언트는 nonce가 요청과 같은 응답만 수락하고 UUID를 보드 식별자로 사용한다.
 
 ## TCP 프레이밍
 
@@ -48,6 +50,7 @@ payload[payload_length]
 | `0x0009` | READ_BACKLOG | `after_record_id:u64, max_records:u32` | 다음 저장 레코드를 최대 2000개 조회 |
 | `0x000a` | READ_BACKLOG_V2 | `after_record_id:u64, max_records:u32` | 수신 Unix 시각을 포함해 다음 저장 레코드 조회 |
 | `0x000b` | STREAM_START_V2 | 없음 | 수신 Unix 시각을 포함한 라이브 전송 시작 |
+| `0x000c` | SET_RATE_GROUP | JSON `{groupId,rateHz}` | capability에서 `writable=true`인 채널 그룹의 속도 설정 |
 | `0x0100` | LIVE_DATA | `record_id:u64 + frame[48]` | 라이브 데이터, request_id=0 |
 | `0x0101` | ARCHIVE_DATA | `record_id:u64 + frame[48]` | 누락 구간 재생, 원 요청 request_id 사용 |
 | `0x0102` | ARCHIVE_DATA_V2 | `record_id:u64 + received_unix_ns:u64 + frame[48]` | 시각 포함 누락 구간 재생 |

@@ -20,6 +20,17 @@ def frame(sequence: int) -> bytes:
 
 
 class SegmentRingTests(unittest.TestCase):
+    def test_dual_adc_capabilities_report_rates_and_groups(self) -> None:
+        capabilities = ads8688d.channel_capabilities(1250)
+        self.assertEqual(capabilities["channelCount"], 10)
+        self.assertEqual(
+            [channel["sampleRateHz"] for channel in capabilities["channels"]],
+            [1250] * 8 + [400, 10],
+        )
+        writable = [group for group in capabilities["sampleRateGroups"]
+                    if group["writable"]]
+        self.assertEqual(writable[0]["channelIds"], [f"CH{i}" for i in range(8)])
+
     def test_fifo_and_backlog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             segment_bytes = ads8688d.SEGMENT_HEADER.size + 2 * ads8688d.RECORD.size
