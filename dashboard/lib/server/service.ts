@@ -41,12 +41,12 @@ export class MaintenanceService {
     const lastReadings = new Map<string, Reading>();
     for (const r of store.readings) if (!lastReadings.has(r.sensorId) || r.timestamp > lastReadings.get(r.sensorId)!.timestamp) lastReadings.set(r.sensorId, r);
     const lastDiagnoses = new Map<string, Diagnosis>();
-    for (const d of store.diagnoses) if (!lastDiagnoses.has(d.sensorId) || d.timestamp > lastDiagnoses.get(d.sensorId)!.timestamp) lastDiagnoses.set(d.sensorId, d);
+    for (const d of store.diagnoses) if (!lastDiagnoses.has(d.sensorId) || d.timestamp >= lastDiagnoses.get(d.sensorId)!.timestamp) lastDiagnoses.set(d.sensorId, d);
     const daqs = store.daqs.map(d => ({ ...d, online: online(d), sensorCount: store.sensors.filter(s => s.daqUuid === d.uuid).length, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null }));
     const sensors: SensorView[] = store.sensors.map(s => {
       const d = board(store, s.daqUuid);
       const stored = lastReadings.get(s.id) || null;
-      const last = stored ? calibrated(stored, s) : null;
+      const last = stored ? { ...stored, value: stored.value * s.calibration.scale + s.calibration.offset } : null;
       const preview = last ? { id: last.id, sensorId: last.sensorId, timestamp: last.timestamp, value: last.value, sps: last.sps, source: last.source } : null;
       return { ...s, equipmentId: d.equipmentId, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null, daqLabel: d.label, latest: preview, diagnosis: lastDiagnoses.get(s.id) || null, online: online(d)&&s.connected!==false };
     });
@@ -208,7 +208,7 @@ export class MaintenanceService {
         const d = object(input); const sensor = channelSensor(d.channel);
         const edgePrediction=d.edgePrediction===undefined?undefined:parseSensorPrediction(d.edgePrediction);
         const anomaly=edgePrediction?.anomaly_detection;
-        return { id: randomUUID(), sensorId: sensor.id, timestamp: d.timestamp == null ? iso() : timestamp(d.timestamp), severity: edgePrediction?(anomaly?.status==="ok"?(anomaly.is_anomaly?"warning":"normal"):"unknown"):choice(d.severity, ["normal", "warning", "critical", "unknown"] as const, "진단 상태"), title: text(d.title, "진단명"), description: text(d.description, "진단 설명", 2000), confidence: edgePrediction?null:d.confidence == null ? null : numeric(d.confidence, "신뢰도", 0, 1), rulHours: edgePrediction?(edgePrediction.rul.status==="available"?edgePrediction.rul.estimated_rul_hours:null):d.rulHours == null ? null : numeric(d.rulHours, "RUL", 0, 1e9), ...(edgePrediction?{edgePrediction}:{}), model: text(d.model, "모델명"), source: store.mode, acknowledgedAt: null };
+        return { id: randomUUID(), receivedAt: iso(), sensorId: sensor.id, timestamp: d.timestamp == null ? iso() : timestamp(d.timestamp), severity: edgePrediction?(anomaly?.status==="ok"?(anomaly.is_anomaly?"warning":"normal"):"unknown"):choice(d.severity, ["normal", "warning", "critical", "unknown"] as const, "진단 상태"), title: text(d.title, "진단명"), description: text(d.description, "진단 설명", 2000), confidence: edgePrediction?null:d.confidence == null ? null : numeric(d.confidence, "신뢰도", 0, 1), rulHours: edgePrediction?(edgePrediction.rul.status==="available"?edgePrediction.rul.estimated_rul_hours:null):d.rulHours == null ? null : numeric(d.rulHours, "RUL", 0, 1e9), ...(edgePrediction?{edgePrediction}:{}), model: text(d.model, "모델명"), source: store.mode, acknowledgedAt: null };
       });
       for (const r of readings) {
         const last = latest(store.readings, r.sensorId);

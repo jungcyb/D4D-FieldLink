@@ -20,6 +20,16 @@ dashboard as a diagnosis with model `edge-rms-sta-lta` (registered channels)
 and as a device log `AD_RMS_WARNING` / `AD_RMS_ALARM` / `AD_RMS_NORMAL` with
 the ratio and RMS values in its metadata (every channel).
 
+Boards supporting `ANOMALY_EVENT` push state changes without waiting for the
+10-second STATUS probe; initial STATUS is also processed immediately. Diagnoses
+are uploaded before per-channel logs so logging does not delay that verdict.
+Failed delivery does not advance the reported-state cursor, and retries reuse
+stable diagnosis frame IDs. Dashboard requests time out after 10 seconds rather
+than blocking the queue indefinitely. The STATUS probe remains the recovery
+path for missed events; this does not change the board's inference cadence.
+Restart the collector to apply changes. The dashboard uses SSE change notices
+plus a one-second fallback query; see `dashboard/README.md` for deployment limits.
+
 Register real channels as `CH0` through `CH7`. ADS8688 straight-binary codes
 are converted to the configured bipolar input voltage range (currently
 `+/-10.24 V`). Sensor-specific affine calibration is applied by the dashboard,

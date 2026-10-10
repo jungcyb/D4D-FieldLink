@@ -2,7 +2,7 @@
 
 import dgram from "node:dgram";
 import net from "node:net";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,7 +128,7 @@ async function connect(host, port) {
 async function dashboard(path, options = {}) {
   const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers };
   if (path.startsWith("/edge/") && process.env.EDGE_API_TOKEN) headers.Authorization = `Bearer ${process.env.EDGE_API_TOKEN}`;
-  const response = await fetch(new URL(`/api${path}`, dashboardUrl), { ...options, headers }); const payload = await response.json();
+  const response = await fetch(new URL(`/api${path}`, dashboardUrl), { ...options, headers, signal: options.signal || AbortSignal.timeout(10000) }); const payload = await response.json();
   if (!response.ok) throw new Error(payload.error?.message || `dashboard HTTP ${response.status}`); return payload.data;
 }
 
@@ -206,6 +206,22 @@ export function anomalyEvents(anomaly, reported, sensors) {
   return { diagnoses, logs };
 }
 
+export async function reportAnomaly(uuid, anomaly, reported, sensors, post = dashboard) {
+  const next = new Map(reported);
+  const { diagnoses, logs } = anomalyEvents(anomaly, next, sensors);
+  // Deliver the alarm before logs. Stable IDs make partial-delivery retries safe.
+  if (diagnoses.length) {
+    const frameId = `ad-${createHash("sha256").update(JSON.stringify(diagnoses)).digest("hex")}`;
+    await post("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: uuid, frameId, diagnoses }) });
+  }
+  for (const { batchId, log: entry } of logs) {
+    await post("/edge/logs", { method: "POST", body: JSON.stringify({ daqUuid: uuid, batchId, logs: [entry] }) });
+    log("anomaly", `${uuid} ${entry.code} ${entry.message}`);
+  }
+  // A failed delivery must remain eligible for the next STATUS/event retry.
+  reported.clear(); for (const [channel, state] of next) reported.set(channel, state);
+}
+
 function backlogPayload(after, limit = 2000) { const payload = Buffer.alloc(12); payload.writeBigUInt64BE(after, 0); payload.writeUInt32BE(limit, 8); return payload; }
 
 async function runConnection(board) {
@@ -223,14 +239,14 @@ async function runConnection(board) {
     client.onFrame = frame => frame.archived ? recoveryFrames?.accept(frame) : liveFrames.accept(frame);
     // Anomaly verdicts arrive pushed (ANOMALY_EVENT, on state change) and in the 10 s STATUS fallback; report them in arrival order.
     const anomalyStates = new Map(); let anomalyQueue = Promise.resolve();
-    async function reportAnomaly(anomaly) {
+    async function deliverAnomaly(anomaly) {
       if (!anomaly) return;
-      await liveWriter.refreshSensors(); const { diagnoses, logs } = anomalyEvents(anomaly, anomalyStates, liveWriter.sensors);
-      for (const { batchId, log: entry } of logs) { await dashboard("/edge/logs", { method: "POST", body: JSON.stringify({ daqUuid: uuid, batchId, logs: [entry] }) }); log("anomaly", `${uuid} ${entry.code} ${entry.message}`); }
-      if (diagnoses.length) await dashboard("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: uuid, diagnoses }) });
+      await liveWriter.refreshSensors();
+      await reportAnomaly(uuid, anomaly, anomalyStates, liveWriter.sensors);
     }
-    const queueAnomaly = anomaly => { anomalyQueue = anomalyQueue.then(() => reportAnomaly(anomaly)).catch(error => log("anomaly report failed", `${uuid} ${error.message}`)); };
+    const queueAnomaly = anomaly => { anomalyQueue = anomalyQueue.then(() => deliverAnomaly(anomaly)).catch(error => log("anomaly report failed", `${uuid} ${error.message}`)); };
     client.onAnomaly = queueAnomaly;
+    queueAnomaly(status.anomaly);
     let timestamped = hello.capabilities?.includes("timestamped_stream");
     const streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
     await client.request(streamType);

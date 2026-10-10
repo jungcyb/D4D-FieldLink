@@ -4,6 +4,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { service, ApiError } from "@/lib/server/service";
 import { operationsHttp } from "@/lib/server/operations-http";
 import { OperationsService } from "@/lib/server/operations";
+import { eventResponse, publishUpdate } from "@/lib/server/live-events";
 
 import { check,object } from "@/lib/server/validation";
 
@@ -44,6 +45,7 @@ async function dispatch(request: Request, context: { params: Promise<{ path: str
     const url = new URL(request.url);
     const method = request.method;
     const [resource, id, action] = path;
+    if (method === "GET" && resource === "events" && path.length === 1) return eventResponse(request.signal);
     const svc = service();
     if (method !== "GET" && method !== "HEAD") {
       const origin = request.headers.get("origin");
@@ -141,7 +143,19 @@ async function dispatch(request: Request, context: { params: Promise<{ path: str
     return Response.json({ error: { code: "INTERNAL_ERROR", message: "서버 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." } }, { status: 500, headers });
   }
 }
+async function mutation(request: Request, context: { params: Promise<{ path: string[] }> }) {
+  const response = await dispatch(request, context);
+  // Only announce successfully committed data, never a rejected command.
+  if (response.ok) {
+    const { path } = await context.params;
+    if (path[0] === "edge" && path[1] === "frames") {
+      const { data } = await response.clone().json();
+      if (!data.duplicate) publishUpdate(data.diagnoses ? "diagnoses" : "telemetry");
+    } else publishUpdate(path[0] === "edge" && path[1] === "logs" ? "logs" : path[1] === "predictions" ? "diagnoses" : "configuration");
+  }
+  return response;
+}
 export const GET = dispatch;
-export const POST = dispatch;
-export const PATCH = dispatch;
-export const DELETE = dispatch;
+export const POST = mutation;
+export const PATCH = mutation;
+export const DELETE = mutation;

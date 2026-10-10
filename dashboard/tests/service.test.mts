@@ -19,6 +19,16 @@ function setup(t: TestContext) {
   const sensor = service.saveSensor({ daqUuid: boardResponse.uuid, channel: "CH-1", name: "진동 센서", type: "vibration", position: "베어링", unit: "mm/s", sps: 1000 });
   return { service, repo, equipment, sensor };
 }
+test("equal-time state changes use the latest received verdict; older replay cannot replace it",t=>{
+  const {service}=setup(t),at=new Date().toISOString();
+  const frame=(severity:string,timestamp=at)=>({daqUuid:boardResponse.uuid,diagnoses:[{channel:"CH-1",timestamp,severity,title:severity,description:"edge",model:"test"}]});
+  service.ingest(frame("critical"));service.ingest(frame("normal"));
+  assert.equal(service.snapshot().sensors[0].diagnosis?.severity,"normal");
+  assert.ok(service.snapshot().sensors[0].diagnosis?.receivedAt);
+  service.ingest(frame("warning",new Date(Date.parse(at)-1000).toISOString()));
+  assert.equal(service.snapshot().sensors[0].diagnosis?.severity,"normal");
+});
+
 test("same board UUID updates address and preserves equipment binding", t => {
   const { service, equipment } = setup(t);
   service.upsertBoard({ ...boardResponse, uuid: boardResponse.uuid.toUpperCase(), ip: "192.168.10.77" });
