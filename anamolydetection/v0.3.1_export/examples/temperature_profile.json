@@ -1,0 +1,13 @@
+{
+  "profile_id": "example_motor/temperature/steady/v1",
+  "feature_schema_version": "edge_window_v2",
+  "feature_mode": "slow_series",
+  "sensor_type": "temperature",
+  "unit": "degC",
+  "channels": ["case"],
+  "window_seconds": 60,
+  "target_sample_rate_hz": 0.1,
+  "min_sample_rate_hz": 0.1,
+  "max_sample_rate_hz": 1,
+  "frequency_bands_hz": []
+}

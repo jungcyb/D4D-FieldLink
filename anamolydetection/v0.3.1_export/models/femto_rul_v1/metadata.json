@@ -1,0 +1,74 @@
+{
+  "model_type": "random_forest_rul",
+  "model_version": "femto_rul_v1",
+  "status": "candidate",
+  "created_utc": "2026-10-10T08:00:23.694015+00:00",
+  "approval_id": "user-request-20261010-femto-rul",
+  "profile_id": "femto/vibration/2ch/25600hz/v1",
+  "profile_sha256": "19986c360a654a87baff445f2a6856e8394ef3d77cbb8d90892c2a6868bd1594",
+  "feature_extractor_version": "edge_window_v2",
+  "feature_columns": [
+    "horizontal__mean",
+    "horizontal__std",
+    "horizontal__rms",
+    "horizontal__peak_to_peak",
+    "horizontal__crest_factor",
+    "horizontal__skewness",
+    "horizontal__kurtosis",
+    "horizontal__dominant_frequency_hz",
+    "horizontal__spectral_centroid_hz",
+    "horizontal__spectral_entropy",
+    "horizontal__band_0_relative_energy",
+    "horizontal__band_1_relative_energy",
+    "horizontal__band_2_relative_energy",
+    "horizontal__band_3_relative_energy",
+    "vertical__mean",
+    "vertical__std",
+    "vertical__rms",
+    "vertical__peak_to_peak",
+    "vertical__crest_factor",
+    "vertical__skewness",
+    "vertical__kurtosis",
+    "vertical__dominant_frequency_hz",
+    "vertical__spectral_centroid_hz",
+    "vertical__spectral_entropy",
+    "vertical__band_0_relative_energy",
+    "vertical__band_1_relative_energy",
+    "vertical__band_2_relative_energy",
+    "vertical__band_3_relative_energy"
+  ],
+  "sklearn_version": "1.9.1",
+  "numpy_version": "2.5.2",
+  "label_unit": "hours",
+  "failure_evidence": true,
+  "data_label": "run_to_failure",
+  "input_counts": {
+    "train": 4227,
+    "validation": 3305,
+    "test": 15927
+  },
+  "sampled_counts": {
+    "train": 4227,
+    "validation": 3305,
+    "test": 15927
+  },
+  "asset_counts": {
+    "train": 3,
+    "validation": 3,
+    "test": 10
+  },
+  "training_label_range_hours": [
+    0.0,
+    7.783333333333333
+  ],
+  "seed": 42,
+  "training_seconds": 2.5622924999915995,
+  "manifest_sha256": "23b523f1c76d2d8e9bac70013b19ecc66c4496058a4fe41697a072ca33770a87",
+  "label_definition": "(last_acquisition_index-current_acquisition_index)*10/3600 hours to recorded run end",
+  "label_source": "https://raw.githubusercontent.com/wkzs111/phm-ieee-2012-data-challenge-dataset/577c77f1d8d284e2eadc8e17fe49d58907d7ad01/IEEEPHM2012-Challenge-Details.pdf",
+  "excluded_assets": {
+    "Bearing1_4": "Published RUL339s vs archive-derived2890s; quarantined, not relabeled"
+  },
+  "selection_policy": "Fixed hyperparameters; fit train only; validation and test never used for fitting or selection.",
+  "model_size_bytes": 1606433
+}

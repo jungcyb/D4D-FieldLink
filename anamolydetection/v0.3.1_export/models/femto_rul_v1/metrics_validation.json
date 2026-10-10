@@ -1,0 +1,38 @@
+{
+  "validation_windows": 3305,
+  "mae_hours": 2.069990184740657,
+  "rmse_hours": 2.6789106619823233,
+  "baseline_train_mean_hours": 2.9391083773624582,
+  "baseline": {
+    "mae_hours": 1.5098040049274601,
+    "rmse_hours": 1.7032282847987201
+  },
+  "asset_macro_mae_hours": 2.128329523371076,
+  "per_asset": [
+    {
+      "asset_id": "Bearing1_2",
+      "windows": 871,
+      "mae_hours": 3.9144309371061055,
+      "rmse_hours": 4.178481091504413,
+      "baseline_mae_hours": 1.730775044029125
+    },
+    {
+      "asset_id": "Bearing2_2",
+      "windows": 797,
+      "mae_hours": 0.7291126558145288,
+      "rmse_hours": 1.2064983764146018,
+      "baseline_mae_hours": 1.8335528218069028
+    },
+    {
+      "asset_id": "Bearing3_2",
+      "windows": 1637,
+      "mae_hours": 1.741444977192594,
+      "rmse_hours": 2.1190863137270957,
+      "baseline_mae_hours": 1.2346093915429364
+    }
+  ],
+  "batch_prediction_seconds": 0.011390100000426173,
+  "batch_prediction_ms_per_window": 0.003446323752020022,
+  "timing_note": "Batch model prediction only; excludes NPZ loading and feature extraction, not edge single-window latency.",
+  "note": "Held-out assets only; no calibrated uncertainty or proof of applicability to other equipment/operating conditions."
+}
