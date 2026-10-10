@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 
-const TYPES = { HELLO: 1, ARCHIVE_INFO: 8, READ_BACKLOG: 9, READ_BACKLOG_V2: 10, STREAM_START_V2: 11, STREAM_START: 6, LIVE_DATA: 0x100, ARCHIVE_DATA: 0x101, ARCHIVE_DATA_V2: 0x102, LIVE_DATA_V2: 0x103, RESPONSE: 0x8000, ERROR: 0xffff };
+const TYPES = { HELLO: 1, STATUS: 2, ARCHIVE_INFO: 8, READ_BACKLOG: 9, READ_BACKLOG_V2: 10, STREAM_START_V2: 11, STREAM_START: 6, LIVE_DATA: 0x100, ARCHIVE_DATA: 0x101, ARCHIVE_DATA_V2: 0x102, LIVE_DATA_V2: 0x103, RESPONSE: 0x8000, ERROR: 0xffff };
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const dashboardUrl = process.env.DASHBOARD_URL || "http://127.0.0.1:3000";
 const stateDirectory = process.env.COLLECTOR_STATE_DIR || join(ROOT, "integration", "state");
@@ -24,7 +24,8 @@ export function decodeFrame(payload, timestamped = false) {
   const receivedNs = timestamped ? payload.readBigUInt64BE(8) : BigInt(Date.now()) * BigInt(1_000_000);
   const frame = payload.subarray(prefix);
   if (frame.readUInt32LE(0) !== 0x38534441 || frame.readUInt16LE(4) !== 1 || frame.readUInt16LE(6) !== 28 || frame.readUInt16LE(24) !== 8 || frame.readUInt16LE(26) !== 1 || frame.readUInt32LE(44) !== crc32(frame.subarray(0, 44))) throw new Error("invalid ADS8688 frame");
-  return { recordId, timestamp: new Date(Number(receivedNs / BigInt(1_000_000))).toISOString(), sequence: frame.readUInt32LE(8), scanRate: frame.readUInt32LE(20), samples: Array.from({ length: 8 }, (_, channel) => rawCodeToVolts(frame.readUInt16LE(28 + channel * 2))) };
+  const scanRate=frame.readUInt32LE(20);if(scanRate<1||scanRate>1000000)throw new Error("invalid scan rate");
+  return { recordId, timestamp: new Date(Number(receivedNs / BigInt(1_000_000))).toISOString(), sequence: frame.readUInt32LE(8), scanRate, samples: Array.from({ length: 8 }, (_, channel) => rawCodeToVolts(frame.readUInt16LE(28 + channel * 2))) };
 }
 
 export function recoveryGaps(plan, firstTimestamp, lastTimestamp) {
@@ -107,15 +108,15 @@ async function saveCursor(uuid, recordId) { await mkdir(stateDirectory, { recurs
 
 function channelIndex(channel) { const match = /^CH-?([0-7])$/i.exec(channel); return match ? Number(match[1]) : null; }
 
-class BatchWriter {
+export class BatchWriter {
   constructor(uuid, client, recovery = null) { this.uuid = uuid; this.client = client; this.recovery = recovery; this.recoverySequence = recovery?.nextSequence || 0; this.recoveryFirst = null; this.recoveryLast = null; this.frames = []; this.recoveryBatch = false; this.queue = Promise.resolve(); this.error = null; this.lastSaved = null; this.sensors = []; this.sensorRefresh = 0; }
   async refreshSensors() { if (Date.now() - this.sensorRefresh < 5000) return; const sensors = await dashboard("/sensors"); this.sensors = sensors.filter(sensor => sensor.daqUuid === this.uuid && channelIndex(sensor.channel) !== null); this.sensorRefresh = Date.now(); }
   add(frame) {
     const recoveryBatch = Boolean(this.recovery?.raw && frame.timestamp >= this.recovery.from && frame.timestamp <= this.recovery.to);
-    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || this.frames[0].scanRate !== frame.scanRate || this.frames.length >= frame.scanRate)) this.closeBatch();
+    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || this.frames[0].scanRate !== frame.scanRate || frame.recordId !== this.frames.at(-1).recordId + BigInt(1) || this.frames.length >= Math.min(frame.scanRate,4096))) this.closeBatch();
     if (frame.archived && !recoveryBatch) return;
     if (!this.frames.length) this.recoveryBatch = recoveryBatch;
-    this.frames.push(frame); if (this.frames.length >= frame.scanRate) this.closeBatch();
+    this.frames.push(frame); if (this.frames.length >= Math.min(frame.scanRate,4096)) this.closeBatch();
   }
   closeBatch() {
     if (!this.frames.length) return; const frames = this.frames, recoveryBatch = this.recoveryBatch; this.frames = [];
@@ -150,7 +151,9 @@ function backlogPayload(after, limit = 2000) { const payload = Buffer.alloc(12);
 
 async function runConnection(board) {
   const client = await connect(board.ip, board.port); activeClient = client; const hello = await client.request(TYPES.HELLO), uuid = hello.uuid;
-  await dashboard("/edge/boards", { method: "POST", body: JSON.stringify({ uuid, label: board.hostname || hello.model || "AM6442-SK", ip: board.ip, port: board.port }) });
+  const status=await client.request(TYPES.STATUS);
+  const info={...(status.sensors!==undefined?{sensors:status.sensors,inventoryComplete:status.inventoryComplete}:hello.sensors!==undefined?{sensors:hello.sensors,inventoryComplete:hello.inventoryComplete}:{}),...(status.sampling!==undefined?{sampling:status.sampling}:hello.sampling!==undefined?{sampling:hello.sampling}:{})};
+  await dashboard("/edge/boards", { method: "POST", body: JSON.stringify({ uuid, label: board.hostname || hello.model || "AM6442-SK", ip: board.ip, port: board.port, ...info }) });
   const recoveries = await dashboard(`/edge/recovery?daqUuid=${encodeURIComponent(uuid)}`), recovery = recoveries.find(plan => plan.status === "pending" || plan.status === "receiving") || null;
   const archive = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, earliest = archive?.earliest_record_id == null ? null : BigInt(archive.earliest_record_id), cursor = recoveryCursor(recovery, earliest);
   const liveWriter = new BatchWriter(uuid, client), liveFrames = new OrderedFrames(liveWriter, null);

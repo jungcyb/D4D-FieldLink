@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { minMaxEnvelope } from "../signal.ts";
+import {parseSensorPrediction,predictionFrame} from "./edge-prediction.ts";
+import {parseDaqInfo,applyDaqInfo} from "./daq-info.ts";
+import {channelKey,channelRate} from "../daq-sampling.ts";
 import type { Store, BoardResponse, Daq, Equipment, Sensor, Diagnosis, Task, Reading, Snapshot, SensorView } from "../types.ts";
 import { FileRepository } from "./repository.ts";
 import { check, object, text, numeric, choice, uuid, ip, timestamp, ApiError } from "./validation.ts";
@@ -45,15 +48,14 @@ export class MaintenanceService {
       const stored = lastReadings.get(s.id) || null;
       const last = stored ? calibrated(stored, s) : null;
       const preview = last ? { id: last.id, sensorId: last.sensorId, timestamp: last.timestamp, value: last.value, sps: last.sps, source: last.source } : null;
-      return { ...s, equipmentId: d.equipmentId, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null, daqLabel: d.label, latest: preview, diagnosis: lastDiagnoses.get(s.id) || null, online: online(d) };
+      return { ...s, equipmentId: d.equipmentId, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null, daqLabel: d.label, latest: preview, diagnosis: lastDiagnoses.get(s.id) || null, online: online(d)&&s.connected!==false };
     });
     const equipment = store.equipment.map(e => {
       const children = sensors.filter(s => s.equipmentId === e.id);
-      const rul = children.map(s => s.diagnosis?.rulHours).filter((v): v is number => v != null);
-      const severity = children.some(s => s.diagnosis?.severity === "critical") ? "critical" as const : children.some(s => s.diagnosis?.severity === "warning") ? "warning" as const : children.some(s => s.diagnosis) ? "normal" as const : "unknown" as const;
-      return { ...e, daqCount: daqs.filter(d => d.equipmentId === e.id).length, sensorCount: children.length, severity, rulHours: rul.length ? Math.min(...rul) : null, online: daqs.some(d => d.equipmentId === e.id && d.online), sensors: children };
+      const severity = children.some(s => s.diagnosis?.severity === "critical") ? "critical" as const : children.some(s => s.diagnosis?.severity === "warning") ? "warning" as const : children.length>0 && children.every(s => s.diagnosis?.severity === "normal") ? "normal" as const : "unknown" as const;
+      return { ...e, daqCount: daqs.filter(d => d.equipmentId === e.id).length, sensorCount: children.length, severity, rulHours: null, online: daqs.some(d => d.equipmentId === e.id && d.online), sensors: children };
     });
-    const rank = { critical: 0, warning: 1, normal: 2 };
+    const rank = { critical: 0, warning: 1, unknown: 2, normal: 3 };
     const diagnoses = sensors.flatMap(s => s.diagnosis ? [{ ...s.diagnosis, sensorName: s.name, equipmentId: s.equipmentId, equipmentName: s.equipmentName, location: store.equipment.find(e => e.id === s.equipmentId)?.location || null, position: s.position }] : []).sort((a, b) => rank[a.severity] - rank[b.severity] || (a.rulHours ?? Infinity) - (b.rulHours ?? Infinity) || b.timestamp.localeCompare(a.timestamp));
     const tasks = store.tasks.map(t => ({ ...t, equipmentName: find(store.equipment, t.equipmentId).name, location: find(store.equipment, t.equipmentId).location })).sort((a, b) => Number(a.status === "completed") - Number(b.status === "completed") || ({ critical: 0, high: 1, normal: 2 }[a.priority] - { critical: 0, high: 1, normal: 2 }[b.priority]));
     return { mode: store.mode, serverTime: iso(), equipment, sensors, daqs, diagnoses, tasks, summary: { equipment: equipment.length, daqs: daqs.length, onlineDaqs: daqs.filter(d => d.online).length, sensors: sensors.length, critical: equipment.filter(e => e.severity === "critical").length, warning: equipment.filter(e => e.severity === "warning").length, normal: equipment.filter(e => e.severity === "normal").length, unknown: equipment.filter(e => e.severity === "unknown").length, openTasks: tasks.filter(t => t.status !== "completed").length } };
@@ -66,7 +68,9 @@ export class MaintenanceService {
       for (const d of store.daqs) {
         if (store.operations?.demoOffline.includes(d.uuid) || d.uuid === DEMO_BOARDS[3].uuid && !store.operations?.demoForceOnline.includes(d.uuid) || !DEMO_BOARDS.some(b => b.uuid === d.uuid)) continue;
         d.lastSeen = iso();
+        if(d.acquiring===false)continue;
         for (const s of store.sensors.filter(s => s.daqUuid === d.uuid)) {
+          if(s.sps==null||s.sps<=0||s.connected===false)continue;
           const value = demoValue(s, tick);
           store.readings.push({ id: randomUUID(), sensorId: s.id, timestamp: iso(), value, sps: s.sps, raw: rawSamples(s, value, tick), source: "demo" });
         }
@@ -84,11 +88,12 @@ export class MaintenanceService {
     const data = object(input);
     const response: BoardResponse = { uuid: uuid(data.uuid), label: text(data.label || `DAQ ${String(data.uuid).slice(0, 8)}`, "DAQ 이름"), ip: ip(data.ip), port: numeric(data.port, "TCP 포트", 1, 65535) };
     check(Number.isInteger(response.port), "TCP 포트는 정수여야 합니다.");
+    const info=parseDaqInfo(data);
     return this.repository.mutate(store => {
       const existing = store.daqs.find(d => d.uuid === response.uuid);
-      if (existing) { Object.assign(existing, response, { lastSeen: iso() }); return existing; }
+      if (existing) { Object.assign(existing, response, { lastSeen: iso() }); applyDaqInfo(store,existing,info); return existing; }
       const newBoard: Daq = { ...response, equipmentId: null, lastSeen: iso(), source: store.mode, createdAt: iso() };
-      store.daqs.push(newBoard); return newBoard;
+      store.daqs.push(newBoard); applyDaqInfo(store,newBoard,info); return newBoard;
     });
   }
   async discover() {
@@ -124,12 +129,14 @@ export class MaintenanceService {
     return this.repository.mutate(store => {
       const existing = id ? find(store.sensors, id) : null;
       const daqUuid = uuid(data.daqUuid || existing?.daqUuid);
-      board(store, daqUuid);
+      const daq=board(store, daqUuid);
+      const requested=data.sps==null?null:numeric(data.sps,"SPS",0.01,1000000);
+      const sps=existing?.sps??channelRate(daq,String(data.channel||existing?.channel||""))??requested;
       check(!existing || existing.daqUuid === daqUuid, "센서의 DAQ는 변경할 수 없습니다.");
-      const fields = { daqUuid, channel: text(data.channel, "채널", 40), name: text(data.name, "센서명"), type: choice(data.type, ["vibration", "temperature", "current", "analog"] as const, "센서 종류"), position: text(data.position, "부착 위치"), unit: text(data.unit, "단위", 20), sps: numeric(data.sps, "SPS", 0.01, 1000000) };
-      check(!store.sensors.some(s => s.daqUuid === daqUuid && s.channel === fields.channel && s.id !== id), "이 DAQ에 이미 등록된 채널입니다.", 409, "DUPLICATE_CHANNEL");
-      if (existing) { Object.assign(existing, fields); return existing; }
-      const sensor: Sensor = { id: randomUUID(), ...fields, calibration: { scale: 1, offset: 0, inputUnit: store.mode === "demo" ? fields.unit : "V", updatedAt: null }, photo: null, createdAt: iso() }; store.sensors.push(sensor); return sensor;
+      const fields = { daqUuid, channel: text(data.channel, "채널", 40), name: text(data.name, "센서명"), type: choice(data.type, ["vibration", "temperature", "current", "analog"] as const, "센서 종류"), position: text(data.position, "부착 위치"), unit: text(data.unit, "단위", 20), sps };
+      check(!store.sensors.some(s => s.daqUuid === daqUuid && channelKey(s.channel) === channelKey(fields.channel) && s.id !== id), "이 DAQ에 이미 등록된 채널입니다.", 409, "DUPLICATE_CHANNEL");
+      if (existing) { Object.assign(existing, fields); existing.registrationSource="manual"; return existing; }
+      const sensor: Sensor = { id: randomUUID(), registrationSource:"manual", ...fields, calibration: { scale: 1, offset: 0, inputUnit: store.mode === "demo" ? fields.unit : "V", updatedAt: null }, photo: null, createdAt: iso() }; store.sensors.push(sensor); return sensor;
     });
   }
   calibrateSensor(sensorId: string, input: unknown): Sensor {
@@ -168,35 +175,44 @@ export class MaintenanceService {
     return sensorIds.map(sensorId=>{const sensor=find(store.sensors,sensorId);return {sensorId,points:(indexed.get(sensorId)||[]).sort((a,b)=>b.timestamp.localeCompare(a.timestamp)).slice(0,limit).reverse().map(r=>({timestamp:r.timestamp,value:calibrated(r,sensor).value}))};});
   }
   ingest(input: unknown) {
-    const data = object(input);
+    let data = object(input);
     const daqUuid = uuid(data.daqUuid);
-    check(Array.isArray(data.readings) && data.readings.length > 0 && data.readings.length <= 100, "readings는 1~100개여야 합니다.");
+    const info=data.schema_version===undefined?parseDaqInfo(data):{};
+    const converted=data.schema_version!==undefined?predictionFrame({...data,daqUuid},this.repository.read()):null;
+    if(converted)data=converted.data;
+    const frameReadings=data.readings??[];
+    check(Array.isArray(frameReadings) && frameReadings.length <= 100, "readings는 최대 100개 배열이어야 합니다.");
+    check(frameReadings.length>0 || Array.isArray(data.diagnoses)&&data.diagnoses.length>0 || info.sampling || info.sensors,"readings, diagnoses 또는 DAQ 정보가 하나 이상 필요합니다.");
     check(data.diagnoses == null || Array.isArray(data.diagnoses) && data.diagnoses.length <= 100, "diagnoses는 최대 100개 배열이어야 합니다.");
     const frameId = data.frameId == null ? null : text(data.frameId, "프레임 ID", 100);
     return this.repository.mutate(store => {
       const daq = board(store, daqUuid);
       const frameKey = frameId ? `${daqUuid}/${frameId}` : null;
       if (frameKey && store.receivedFrames.includes(frameKey)) return { accepted: 0, diagnoses: 0, duplicate: true };
+      applyDaqInfo(store,daq,info);
       const channelSensor = (channel: unknown) => {
-        const result = store.sensors.find(s => s.daqUuid === daqUuid && s.channel === channel);
+        const result = store.sensors.find(s => s.daqUuid === daqUuid && typeof channel==="string" && channelKey(s.channel) === channelKey(channel));
         check(result, `등록되지 않은 채널입니다: ${String(channel)}`, 404, "UNKNOWN_CHANNEL"); return result;
       };
       // Build and validate both arrays before mutating any records.
-      const readings: Reading[] = (data.readings as unknown[]).map(input => {
+      const readings: Reading[] = (frameReadings as unknown[]).map(input => {
         const r = object(input); const sensor = channelSensor(r.channel);
         check(Array.isArray(r.raw) && r.raw.length > 0 && r.raw.length <= 4096 && r.raw.every(n => typeof n === "number" && Number.isFinite(n)), "raw는 1~4096개의 유한한 숫자 배열이어야 합니다.");
         return { id: randomUUID(), sensorId: sensor.id, timestamp: timestamp(r.timestamp), value: numeric(r.value, "대표값", -1e12, 1e12), sps: numeric(r.sps, "SPS", 0.01, 1000000), raw: r.raw as number[], source: store.mode };
       });
       const diagnoses: Diagnosis[] = ((data.diagnoses || []) as unknown[]).map(input => {
         const d = object(input); const sensor = channelSensor(d.channel);
-        return { id: randomUUID(), sensorId: sensor.id, timestamp: d.timestamp == null ? iso() : timestamp(d.timestamp), severity: choice(d.severity, ["normal", "warning", "critical"] as const, "진단 상태"), title: text(d.title, "진단명"), description: text(d.description, "진단 설명", 2000), confidence: d.confidence == null ? null : numeric(d.confidence, "신뢰도", 0, 1), rulHours: d.rulHours == null ? null : numeric(d.rulHours, "RUL", 0, 1e9), model: text(d.model, "모델명"), source: store.mode, acknowledgedAt: null };
+        const edgePrediction=d.edgePrediction===undefined?undefined:parseSensorPrediction(d.edgePrediction);
+        const anomaly=edgePrediction?.anomaly_detection;
+        return { id: randomUUID(), sensorId: sensor.id, timestamp: d.timestamp == null ? iso() : timestamp(d.timestamp), severity: edgePrediction?(anomaly?.status==="ok"?(anomaly.is_anomaly?"warning":"normal"):"unknown"):choice(d.severity, ["normal", "warning", "critical", "unknown"] as const, "진단 상태"), title: text(d.title, "진단명"), description: text(d.description, "진단 설명", 2000), confidence: edgePrediction?null:d.confidence == null ? null : numeric(d.confidence, "신뢰도", 0, 1), rulHours: edgePrediction?(edgePrediction.rul.status==="available"?edgePrediction.rul.estimated_rul_hours:null):d.rulHours == null ? null : numeric(d.rulHours, "RUL", 0, 1e9), ...(edgePrediction?{edgePrediction}:{}), model: text(d.model, "모델명"), source: store.mode, acknowledgedAt: null };
       });
       for (const r of readings) {
         const last = latest(store.readings, r.sensorId);
-        if (!last || r.timestamp >= last.timestamp) find(store.sensors, r.sensorId).sps = r.sps;
+        if (!last || r.timestamp >= last.timestamp) {const sensor=find(store.sensors, r.sensorId);sensor.sps = r.sps;}
         store.readings.push(r);
       }
       store.diagnoses.push(...diagnoses);
+      if(converted){const equipment=find(store.equipment,converted.equipmentId);if(!equipment.edgePrediction||converted.equipmentPrediction.timestamp>=equipment.edgePrediction.timestamp)equipment.edgePrediction=converted.equipmentPrediction;}
       this.trimReadings(store);
       // Keep recent diagnostics plus every diagnostic referenced by a maintenance task.
       const pinned = new Set(store.tasks.map(t => t.diagnosisId));

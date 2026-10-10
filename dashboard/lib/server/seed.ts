@@ -42,7 +42,7 @@ export function makeDemoStore(): Store {
   for (const sensor of store.sensors) {
     for (let t = 0; t < 48; t++) {
       const value = demoValue(sensor, t);
-      store.readings.push({ id: `${sensor.id}-${t}`, sensorId: sensor.id, timestamp: new Date(now - (48 - t) * 5000 - (sensor.id === "s-veh-v" ? 600000 : 0)).toISOString(), value, sps: sensor.sps, raw: rawSamples(sensor, value, t), source: "demo" });
+      store.readings.push({ id: `${sensor.id}-${t}`, sensorId: sensor.id, timestamp: new Date(now - (48 - t) * 5000 - (sensor.id === "s-veh-v" ? 600000 : 0)).toISOString(), value, sps: sensor.sps!, raw: rawSamples(sensor, value, t), source: "demo" });
     }
     const severity: Severity = sensor.id === "s-gen-v" ? "critical" : sensor.id === "s-cool-t" ? "warning" : "normal";
     store.diagnoses.push({ id: `diag-${sensor.id}`, sensorId: sensor.id, timestamp: new Date(now - 20000).toISOString(), severity, title: severity === "critical" ? "베어링 마모 징후" : severity === "warning" ? "냉각 효율 저하 징후" : "정상 운전 범위", description: severity === "critical" ? "모의 진단: 베어링 진동 증가 패턴입니다. 베어링 점검 및 교체 준비를 권장합니다." : severity === "warning" ? "모의 진단: 냉각수 온도 상승 패턴입니다. 냉각수와 필터 상태를 점검하세요." : "모의 진단: 입력 신호가 정상 범위에 있습니다.", confidence: severity === "critical" ? 0.96 : severity === "warning" ? 0.91 : 0.98, rulHours: severity === "critical" ? 36 : severity === "warning" ? 120 : null, model: "DEMO · simulated result", source: "demo", acknowledgedAt: null });

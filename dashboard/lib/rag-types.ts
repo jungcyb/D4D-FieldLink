@@ -12,6 +12,10 @@ export interface RagContext {
 }
 export interface RagEnvelope {schemaVersion:"fieldlink.rag.v1";selection:RagSelection;context:RagContext}
 export interface RagCitation {id:string;title:string;source:string|null;excerpt:string|null;sensorId:string|null;batchId:string|null}
-export interface RagResult {answer:string;citations:RagCitation[];model:string|null;requestId:string;contextCapturedAt:string;respondedAt:string;selection:RagSelection;contextStats:{sensors:number;batches:number;bytes:number}}
+export type RagSourceKind="sensor"|"batch"|"log"|"dependency"|"incident";
+export interface RagSourceField {label:string;value:string}
+export interface RagSource extends RagCitation {label:string;kind:RagSourceKind;fields?:RagSourceField[]}
+export interface RagRetrieval {method:"bm25";candidates:number;included:number;omitted:number;sources:RagSource[];inputTokens:number;inputBudget:number;contextTokens:number;outputTokens:number;historyMessages:number;tokenCount:"server"|"estimate"}
+export interface RagResult {answer:string;citations:RagCitation[];model:string|null;requestId:string;contextCapturedAt:string;respondedAt:string;selection:RagSelection;contextStats:{sensors:number;batches:number;bytes:number};retrieval?:RagRetrieval}
 export interface RagHistoryMessage {role:"user"|"assistant";content:string;daqUuid?:string;sensorIds?:string[]}
-export interface RagConfig {configured:boolean;protocol:"fieldlink.rag.v1";timeoutMs:number;maxSensors:number;maxBatchesPerSensor:number}
+export interface RagConfig {configured:boolean;provider:"rag"|"clika";model:string|null;protocol:"fieldlink.rag.v1";timeoutMs:number;maxSensors:number;maxBatchesPerSensor:number}

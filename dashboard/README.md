@@ -7,7 +7,7 @@ Next.js 16.4 App Router + React + TypeScript. 프론트와 백엔드(Route Handl
 Node.js **22.18 이상**이 필요합니다. 권장: Node 24. 기존 설치된 `node_modules`를 그대로 사용합니다.
 
 ```powershell
-cd C:\Users\frin0\Desktop\Projects\D4D\dashboard
+cd C:\Users\frin0\Desktop\Projects\D4D\D4D-FieldLink\dashboard
 npm run dev
 ```
 
@@ -57,7 +57,7 @@ $env:EDGE_API_TOKEN = 'your-local-shared-token'
 npm run dev
 ```
 
-`DAQ_MODE` 기본값은 `demo`. 모의 데이터는 화면 조회 요청에 맞춰 최대 5초마다 추가됩니다. 이 방식은 실제 백그라운드 수집기나 연속 신호 수집이 아닙니다. 데모 차량 DAQ는 오프라인 상황을 보여줍니다. `DATA_DIR`로 저장 위치를 변경할 수 있습니다. `.env.example`을 `.env.local`로 복사해도 됩니다.
+`DAQ_MODE`를 지정하지 않으면 `next dev`/`npm run dev`는 모의 데이터(`demo`), `next start`/`npm run start`는 실제 장비 데이터(`external`)를 사용합니다. `next build` 후 `next start`를 실행하세요. 명시적인 `DAQ_MODE=demo` 또는 `external` 설정은 자동 선택보다 우선합니다. `.env.local`에서는 `DAQ_MODE`를 비우거나 생략하면 됩니다. 모의 데이터는 화면 조회 요청에 맞춰 최대 5초마다 추가됩니다. 이 방식은 실제 백그라운드 수집기나 연속 신호 수집이 아닙니다. 데모 차량 DAQ는 오프라인 상황을 보여줍니다. `DATA_DIR`로 저장 위치를 변경할 수 있습니다. `.env.example`을 `.env.local`로 복사해도 됩니다.
 
 ## 보드 연결 확장
 
@@ -108,7 +108,7 @@ npm run dev
 ### 센서 등록
 
 ```json
-{ "daqUuid": "11111111-2222-4333-8444-555555555555", "channel": "CH-1", "name": "베어링 진동", "type": "vibration", "position": "구동축 베어링", "unit": "mm/s", "sps": 1000 }
+{ "daqUuid": "11111111-2222-4333-8444-555555555555", "channel": "CH-1", "name": "베어링 진동", "type": "vibration", "position": "구동축 베어링", "unit": "mm/s" }
 ```
 
 종류: `vibration | temperature | current`. 동일 DAQ의 채널은 유일합니다. 진동 측정 단위는 센서/팀의 정의에 맞춰 `g`, `m/s²`, `mm/s` 등으로 등록할 수 있습니다.
@@ -124,9 +124,9 @@ npm run dev
 }
 ```
 
-시각은 시간대를 포함한 ISO 8601 형식입니다. 대표값 `value`는 엣지가 전달한 값이며 서버에서 RMS 등을 새로 계산하지 않습니다. `timestamp`는 배치 첫 샘플 시각, `raw[i]` 시각은 `timestamp + i / sps`입니다. 각 프레임은 1~100개 readings, 각 raw 배열은 1~4096개 숫자를 받습니다. 진단의 RUL/신뢰도는 생략하거나 null일 수 있으며 0도 유효합니다. 진단 상태: `normal | warning | critical`.
+시각은 시간대를 포함한 ISO 8601 형식입니다. 대표값 `value`는 엣지가 전달한 값이며 서버에서 RMS 등을 새로 계산하지 않습니다. `timestamp`는 배치 첫 샘플 시각, `raw[i]` 시각은 `timestamp + i / sps`입니다. 각 프레임은 readings 또는 diagnoses가 하나 이상 필요하고 각각 최대 100개를 받습니다. 각 raw 배열은 1~4096개 숫자를 받습니다. 진단의 RUL/신뢰도는 생략하거나 null일 수 있으며 0도 유효합니다. 진단 상태: `normal | warning | critical | unknown`. 신규 모델 결과는 [v0.3 계약](docs/edge-prediction-v03.md)을 사용합니다.
 
-장비 상태는 센서별 최신 진단의 가장 높은 위험도를 사용하고, RUL은 전달된 추정값 중 최솟값을 표시합니다. **진단 확인/정비 완료는 진단 상태를 바꾸지 않습니다.** 새 정상 진단이 수신되어야 장비 상태가 바뀝니다. 이력이 있는 DAQ의 장비 이동은 기존 측정값의 의미가 달라지므로 409로 차단하며, 추후 이력 이전 정책을 정해 확장할 수 있습니다.
+장비 상태는 센서별 최신 진단의 가장 높은 위험도를 사용하고, RUL은 센서별로 표시하며 설비 전체 RUL은 통합 모델이 없어 추정 불가입니다. **진단 확인/정비 완료는 진단 상태를 바꾸지 않습니다.** 새 정상 진단이 수신되어야 장비 상태가 바뀝니다. 이력이 있는 DAQ의 장비 이동은 기존 측정값의 의미가 달라지므로 409로 차단하며, 추후 이력 이전 정책을 정해 확장할 수 있습니다.
 
 ## 고속 Raw·복구·장애 관계
 
@@ -142,3 +142,11 @@ npm run dev
 ## RAG 현장 질의
 
 모든 대시보드에서 AI 채팅 플로팅 버튼 → 데이터 선택 모달 → 채팅창으로 질의합니다. 대화는 브라우저 sessionStorage에만 보관하며, 세션 초기화 시 사라집니다. 선택한 DAQ·센서·현재 상태·최근 배치와 이전 대화를 RAG 처리 계층에 전달합니다. RAG는 백엔드와 함께 배치하거나 별도 서버로 운영할 수 있습니다. RAG_API_URL 환경변수로 정확한 JSON POST 주소를 지정하세요. [요청·응답 계약과 연결 설정](docs/rag.md).
+
+
+CLIKA 채팅 연결은 [RAG 설정](docs/rag.md), 새 추론 결과 수신은 [v0.3 예측 계약](docs/edge-prediction-v03.md)을 참고하세요. `DAQ_MODE` 미설정 시 개발 서버는 모의 데이터, 프로덕션 서버는 실제 장비 데이터를 사용합니다. 같은 `DATA_DIR`에서도 `demo.json`과 `external.json`을 분리하므로 개발용 센서는 실제 장비 목록에 섞이지 않습니다.
+
+센서 등록에서 SPS는 선택 사항입니다. 모르는 값은 null로 저장하고, 수신 배치 또는 DAQ 상태의 실제 rate를 사용합니다. 가변 rate의 그래프·CSV·RAG 시간축과 컬렉터 배치 정책은 [가변 샘플레이트](docs/edge-prediction-v03.md#가변-샘플레이트)를 참고하세요.
+
+
+DAQ의 센서 자동 등록과 전체/공통/채널별 rate, 향후 보드 구현용 JSON·TCP 연결 형식은 [DAQ 센서와 샘플레이트 계약](docs/daq-sensors-and-rates.md)을 참고하세요.

@@ -3,6 +3,7 @@ import {controlDaq,parseCommand} from "./daq-control.ts";
 import {LocationService,clikaStatus} from "./locations.ts";
 import {RagService,ragConfig} from "./rag.ts";
 import {MaintenanceService} from "./service.ts";
+import {applyDaqInfo} from "./daq-info.ts";
 import {check,object,uuid,timestamp,ApiError} from "./validation.ts";
 interface Options {request:Request;url:URL;path:string[];svc:MaintenanceService;readJson:()=>Promise<unknown>;bytes:(max:number)=>Promise<Uint8Array>;authorize:()=>void}
 const result=(data:unknown,status=200)=>Response.json({data},{status,headers:{"Cache-Control":"no-store"}});
@@ -14,11 +15,14 @@ export async function operationsHttp({request,url,path,svc,readJson,bytes,author
     const command=method==="POST"?parseCommand(await readJson()):undefined;
     try {
       const status=await controlDaq(board,command);
-      if(command) svc.repository.mutate(store=>{
-        for(const sensor of store.sensors.filter(s=>s.daqUuid===key))sensor.sps=status.scan_rate_hz;
-        systemLog(store,"DAQ_ACQUISITION_CHANGED",command.action==="rate"?`샘플레이트 변경: 채널당 ${status.scan_rate_hz} SPS`:status.acquiring?"보드 데이터 수집 시작":"보드 데이터 수집 정지",key,"info",{action:command.action,acquiring:status.acquiring,sps:status.scan_rate_hz});
+      svc.repository.mutate(store=>{
+        const current=store.daqs.find(d=>d.uuid===key)!;current.acquiring=status.acquiring;current.lastSeen=new Date().toISOString();
+        const keepIndependent=!status.channelRatesReported&&current.sampling?.mode==="per-channel"&&command?.action!=="rate";
+        if(keepIndependent&&current.sampling&&status.scan_rate_hz!=null){current.scanRateHz=status.scan_rate_hz;current.sampling={...current.sampling,commonRateHz:status.scan_rate_hz};}
+        applyDaqInfo(store,current,{...(keepIndependent?{}:{sampling:status.sampling}),...(status.sensors?{sensors:status.sensors,inventoryComplete:status.inventoryComplete}:{})});
+        if(command)systemLog(store,"DAQ_ACQUISITION_CHANGED",command.action==="channel_rate"?`${command.channel} 샘플레이트 변경: ${command.sps} SPS`:command.action==="rate"?`공통 샘플레이트 변경: 채널당 ${status.scan_rate_hz} SPS`:status.acquiring?"보드 데이터 수집 시작":"보드 데이터 수집 정지",key,"info",{action:command.action,acquiring:status.acquiring,sps:status.scan_rate_hz});
       });
-      return result(status);
+      return result({...status,sampling:svc.repository.read().daqs.find(d=>d.uuid===key)?.sampling||status.sampling});
     } catch(error) {
       if(command) svc.repository.mutate(store=>systemLog(store,"DAQ_CONTROL_UNCONFIRMED","DAQ 제어 미확인 · 현재 수집 상태를 확인하세요.",key,"warning",{action:command.action,message:error instanceof Error?error.message:"통신 실패"}));
       throw error;

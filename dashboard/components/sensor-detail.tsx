@@ -1,4 +1,5 @@
 "use client";
+import {formatSampleRate} from "@/lib/sampling";
 import { useEffect, useState, useRef, useCallback } from "react";
 import type { SensorView, Reading } from "@/lib/types";
 import { api } from "@/lib/client-api";
@@ -30,7 +31,7 @@ export default function SensorDetail({ sensor, onClose, onEdit, onRefresh, toast
     const link = document.createElement("a"); link.href = href; link.download = `sensor-${sensor.id}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(href), 1000);
   }
   return <Dialog title={sensor.name} subtitle={`${sensor.equipmentName || "장비 미등록"} / ${sensor.daqLabel} / ${sensor.channel}`} onClose={onClose} wide busy={uploading}>
-    <div className="sensor-meta"><span><Icon name="pin" size={16}/>{sensor.position}</span><span className="mono">{sensor.sps.toLocaleString()} SPS</span><span className={`connection ${sensor.online ? "" : "offline"}`}><i/>{sensor.online ? "DAQ 최근 응답" : "DAQ 응답 없음"}</span></div>
+    <div className="sensor-meta"><span><Icon name="pin" size={16}/>{sensor.position}</span><span className="mono">{formatSampleRate(last?.sps??sensor.sps)}</span><span className={`connection ${sensor.online ? "" : "offline"}`}><i/>{sensor.online ? "DAQ 최근 응답" : "DAQ 응답 없음"}</span></div>
     <div className="sensor-value"><strong>{last?.value.toFixed(2) ?? "—"}</strong><span>{sensor.unit}</span><small>{last ? `${time(last.timestamp)} 수집 · ${last.source === "demo" ? "모의 데이터" : "보드 수신"}` : "데이터 수신 대기"}</small></div>
     <div className="chart-toolbar"><div className="segmented"><button onClick={() => setTab("trend")} className={tab === "trend" ? "active" : ""}>대표값 추이</button><button onClick={() => setTab("raw")} className={tab === "raw" ? "active" : ""}>Raw Data</button></div><div className="toolbar-actions"><select aria-label="조회 배치 수" value={limit} onChange={e => setLimit(Number(e.target.value))}><option value={60}>최근 60배치</option><option value={120}>최근 120배치</option><option value={720}>최근 720배치</option></select><button className="button small secondary" onClick={download} disabled={!readings.length}><Icon name="download" size={15}/>CSV</button></div></div>
     {error ? <p className="form-error" role="alert">{error}</p> : <LineChart values={tab === "raw" ? last?.raw || [] : readings.map(r => r.value)} labels={tab === "raw" ? last?.raw.map((_, i) => `${(i / last.sps * 1000).toFixed(1)} ms`) || [] : readings.map(r => time(r.timestamp))} unit={sensor.unit} height={220}/>}

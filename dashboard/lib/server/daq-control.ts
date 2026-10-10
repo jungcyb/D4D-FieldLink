@@ -1,11 +1,29 @@
 import net from "node:net";
 import type { Daq } from "../types.ts";
-import { ApiError, check, object } from "./validation.ts";
-export interface AcquisitionStatus { uuid: string; acquiring: boolean; scan_rate_hz: number; frames_total: number; sequence_gaps_total: number }
-export type AcquisitionCommand = { action: "start" | "stop" } | { action: "rate"; rate: number };
+import { ApiError, check, object, text, numeric } from "./validation.ts";
+import type {DaqSampling,EdgeSensorInfo} from "../daq-types.ts";
+import {parseSampling,parseDaqInfo} from "./daq-info.ts";
+import {channelKey} from "../daq-sampling.ts";
+export interface AcquisitionStatus { uuid: string; acquiring: boolean; scan_rate_hz: number|null; frames_total: number; sequence_gaps_total: number; sampling:DaqSampling; sensors?:EdgeSensorInfo[]; inventoryComplete?:boolean; channelRatesReported:boolean; capabilities:{control:boolean;commonRate:boolean;channelRate:boolean} }
+export function normalizeAcquisitionStatus(input:unknown,hello:Record<string,unknown>,expectedUuid:string):AcquisitionStatus{
+  const status=object(input);check(status.uuid===expectedUuid&&typeof status.acquiring==="boolean","보드 수집 상태를 확인할 수 없습니다.",502);
+  const reported=status.sampling!==undefined||hello.sampling!==undefined;
+  let sampling:DaqSampling;
+  if(reported)sampling=parseSampling(status.sampling??hello.sampling);
+  else {
+    const rate=numeric(status.scan_rate_hz,"보드 scan rate",0.01,1000000),count=numeric(status.channel_count??hello.channel_count??8,"채널 수",1,100);check(Number.isInteger(count),"채널 수는 정수여야 합니다.");
+    sampling={commonRateHz:rate,totalRateHz:rate*count,channels:Array.from({length:count},(_,i)=>({channel:`CH${i}`,sps:rate})),complete:true,mode:"uniform",totalSource:"sum",updatedAt:new Date().toISOString()};
+  }
+  const capabilities=Array.isArray(hello.capabilities)?hello.capabilities:[],info=parseDaqInfo({...(reported?{sampling:status.sampling??hello.sampling}:{}),sensors:status.sensors??hello.sensors,inventoryComplete:status.inventoryComplete??hello.inventoryComplete});
+  const sensorRates=info.sensors?.filter(sensor=>sensor.sps!==undefined);
+  if(!reported&&sensorRates?.length)sampling={...sampling,channels:sensorRates.map(sensor=>({channel:sensor.channel,sps:sensor.sps??null})),complete:false,mode:"per-channel",totalRateHz:null,totalSource:"unknown"};
+  return{uuid:expectedUuid,acquiring:status.acquiring,scan_rate_hz:sampling.commonRateHz,frames_total:typeof status.frames_total==="number"?status.frames_total:0,sequence_gaps_total:typeof status.sequence_gaps_total==="number"?status.sequence_gaps_total:0,...info,sampling,channelRatesReported:reported||!!sensorRates?.length,capabilities:{control:capabilities.includes("acquisition_control"),commonRate:capabilities.includes("sample_rate"),channelRate:capabilities.includes("channel_sample_rate")}};
+}
+export type AcquisitionCommand = { action: "start" | "stop" } | { action: "rate"; rate: number } | {action:"channel_rate";channel:string;sps:number};
 export function parseCommand(input: unknown): AcquisitionCommand {
   const data = object(input);
-  check(["start", "stop", "rate"].includes(String(data.action)), "수집 시작·정지·샘플레이트 변경 중 선택하세요.");
+  check(["start", "stop", "rate", "channel_rate"].includes(String(data.action)), "수집 시작·정지·샘플레이트 변경 중 선택하세요.");
+  if(data.action==="channel_rate")return{action:"channel_rate",channel:text(data.channel,"채널",40),sps:numeric(data.sps,"채널 SPS",0.01,1000000)};
   if (data.action === "rate") {
     check(typeof data.rate === "number" && Number.isInteger(data.rate) && data.rate >= 10 && data.rate <= 2000, "샘플레이트는 채널당 10~2,000 SPS의 정수여야 합니다.");
     return { action: "rate", rate: data.rate };
@@ -15,6 +33,7 @@ export function parseCommand(input: unknown): AcquisitionCommand {
 const busy = new Set<string>();
 /** A short, non-streaming connection. HELLO UUID is verified before any MCU command. */
 export async function controlDaq(daq: Daq, command?: AcquisitionCommand): Promise<AcquisitionStatus> {
+  if(command)parseCommand(command);
   check(daq.source === "external", "실제 보드에서만 수집을 제어할 수 있습니다.", 409);
   if (command) { check(!busy.has(daq.uuid), "이 DAQ는 다른 명령을 처리 중입니다. 상태를 확인한 뒤 다시 시도하세요.", 409); busy.add(daq.uuid); }
   const socket = net.createConnection({ host: daq.ip, port: daq.port });
@@ -52,14 +71,17 @@ export async function controlDaq(daq: Daq, command?: AcquisitionCommand): Promis
     const hello = object(await request(1));
     check(hello.uuid === daq.uuid, "접속 주소의 보드 UUID가 다릅니다. 명령을 전송하지 않았습니다.", 409);
     if (command) {
-      check(Array.isArray(hello.capabilities) && hello.capabilities.includes(command.action === "rate" ? "sample_rate" : "acquisition_control"), "보드가 이 제어 기능을 지원하지 않습니다.", 409);
-      const payload = command.action === "rate" ? Buffer.alloc(4) : Buffer.alloc(0);
-      if (command.action === "rate") payload.writeUInt32BE(command.rate);
-      await request(command.action === "start" ? 3 : command.action === "stop" ? 4 : 5, payload);
+      check(Array.isArray(hello.capabilities) && hello.capabilities.includes(command.action === "channel_rate" ? "channel_sample_rate" : command.action === "rate" ? "sample_rate" : "acquisition_control"), "보드가 이 제어 기능을 지원하지 않습니다.", 409);
+      if(command.action==="channel_rate"){
+        const before=normalizeAcquisitionStatus(await request(2),hello,daq.uuid),channel=before.sampling.channels.find(row=>channelKey(row.channel)===channelKey(command.channel));check(channel,"보드가 보고하지 않은 채널입니다.",409);
+        await request(12,Buffer.from(JSON.stringify({channel:channel.channel,sps:command.sps})));
+      }else{
+        const payload=command.action==="rate"?Buffer.alloc(4):Buffer.alloc(0);if(command.action==="rate")payload.writeUInt32BE(command.rate);
+        await request(command.action==="start"?3:command.action==="stop"?4:5,payload);
+      }
     }
-    const status = object(await request(2));
-    check(status.uuid === daq.uuid && typeof status.acquiring === "boolean" && typeof status.scan_rate_hz === "number" && Number.isFinite(status.scan_rate_hz), "보드 수집 상태를 확인할 수 없습니다.", 502);
-    if (command) check(command.action === "rate" ? status.scan_rate_hz === command.rate : status.acquiring === (command.action === "start"), "명령 후 보드 상태가 일치하지 않습니다. 현재 상태를 다시 확인하세요.", 502);
+    const status = normalizeAcquisitionStatus(await request(2),hello,daq.uuid);
+    if (command) check(command.action === "channel_rate" ? status.sampling.channels.find(row=>channelKey(row.channel)===channelKey(command.channel))?.sps === command.sps : command.action === "rate" ? status.scan_rate_hz === command.rate : status.acquiring === (command.action === "start"), "명령 후 보드 상태가 일치하지 않습니다. 현재 상태를 다시 확인하세요.", 502);
     return status as unknown as AcquisitionStatus;
   } catch (error) {
     if (error instanceof ApiError) throw error;

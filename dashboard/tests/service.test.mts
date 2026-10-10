@@ -46,7 +46,7 @@ test("ingestion is atomic, frame retries deduplicate, offline replay preserves n
   assert.throws(() => service.ingest({ ...frame, frameId: "bad", readings: [...frame.readings, { ...frame.readings[0], channel: "CH-missing" }] }), ApiError);
   assert.equal(readFileSync(repo.filename, "utf8"), before);
   service.ingest({ daqUuid: boardResponse.uuid, readings: [{ channel: "CH-1", timestamp: new Date(Date.now()-100000).toISOString(), value: 1, sps: 100, raw: [1] }] });
-  const snapshot = service.snapshot(); assert.equal(snapshot.sensors[0].sps, 1000); assert.equal(snapshot.sensors[0].latest?.value, 2.7); assert.equal(snapshot.equipment[0].rulHours, 0);
+  const snapshot = service.snapshot(); assert.equal(snapshot.sensors[0].sps, 1000); assert.equal(snapshot.sensors[0].latest?.value, 2.7); assert.equal(snapshot.equipment[0].rulHours, null); assert.equal(snapshot.sensors[0].diagnosis?.rulHours, 0);
   assert.equal(service.telemetry(sensor.id).length, 2);
 });
 test("affine calibration changes API values without changing stored samples", t => {

@@ -5,7 +5,7 @@ import { service, ApiError } from "@/lib/server/service";
 import { operationsHttp } from "@/lib/server/operations-http";
 import { OperationsService } from "@/lib/server/operations";
 
-import { check } from "@/lib/server/validation";
+import { check,object } from "@/lib/server/validation";
 
 const headers = { "Cache-Control": "no-store" };
 const result = (data: unknown, status = 200) => Response.json({ data }, { status, headers });
@@ -126,11 +126,12 @@ async function dispatch(request: Request, context: { params: Promise<{ path: str
     if (method === "PATCH" && resource === "tasks" && path.length === 2) return result(svc.saveTask(await jsonBody(request), id));
     if (method === "POST" && resource === "edge" && path.length === 2) {
       authorizeEdge(request);
-      if (id === "boards" || id === "frames") {
+      if (id === "boards" || id === "frames" || id === "predictions") {
         const ops = new OperationsService(svc.repository); ops.reconcile();
         const data = await jsonBody(request);
+        if(id === "predictions")check(object(data).schema_version === "edge_prediction_v0.3", "edge/predictions에는 v0.3 예측 계약을 전송하세요.");
         const received = id === "boards" ? svc.upsertBoard(data) : svc.ingest(data);
-        ops.reconcile(); return result(received,id === "frames" ? 202 : 200);
+        ops.reconcile(); return result(received,id === "boards" ? 200 : 202);
       }
     }
     return Response.json({ error: { code: "NOT_FOUND", message: "API 경로 또는 메서드를 확인해 주세요." } }, { status: 404, headers });

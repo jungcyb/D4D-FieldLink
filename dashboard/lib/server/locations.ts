@@ -6,18 +6,8 @@ import {FileRepository} from "./repository.ts";
 import {state,systemLog} from "./operations.ts";
 import {check,object,text,numeric,ApiError} from "./validation.ts";
 
-export function clikaBaseUrl():string {
-  const url=new URL(process.env.CLIKA_BASE_URL||"http://127.0.0.1:8000/v1"),host=url.hostname.replace(/^\[|\]$/g,"").toLowerCase();
-  const octets=host.split(".").map(Number),privateIPv4=octets.length===4&&octets.every(n=>Number.isInteger(n)&&n>=0&&n<=255)&&(octets[0]===127||octets[0]===10||octets[0]===192&&octets[1]===168||octets[0]===172&&octets[1]>=16&&octets[1]<=31);
-  const allowedNames=(process.env.CLIKA_ALLOWED_HOSTS||"").split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
-  check(["http:","https:"].includes(url.protocol)&&!url.username&&!url.password&&(host==="localhost"||host==="::1"||privateIPv4||/^(fc|fd)[0-9a-f:]+$/.test(host)||host.endsWith(".internal")||host.endsWith(".local")||allowedNames.includes(host)),"CLIKA_BASE_URL은 폐쇄망의 로컬·사설 추론 주소여야 합니다.",400,"CLIKA_EXTERNAL_URL_BLOCKED");
-  return url.toString().replace(/\/$/,"");
-}
-export async function clikaStatus(fetcher:typeof fetch=fetch){
-  const base=clikaBaseUrl(),headers:Record<string,string>=process.env.CLIKA_API_TOKEN?{Authorization:`Bearer ${process.env.CLIKA_API_TOKEN}`}:{ };
-  try{const response=await fetcher(`${base}/models`,{headers,signal:AbortSignal.timeout(2500),redirect:"error"});if(!response.ok)return{online:false,model:process.env.CLIKA_MODEL||null,models:[],message:`CLIKA 모델 조회 실패 (${response.status})`};const payload=await response.json();const models=(payload.data||[]).slice(0,30).map((m:{id:string})=>m.id);return{online:true,model:process.env.CLIKA_MODEL||null,models,message:"CLIKA 폐쇄망 추론 서버 응답 확인"};}
-  catch{return{online:false,model:process.env.CLIKA_MODEL||null,models:[],message:"CLIKA 로컬 추론 서버에 연결할 수 없습니다."};}
-}
+import {clikaBaseUrl} from "./clika.ts";
+export {clikaBaseUrl,clikaStatus} from "./clika.ts";
 
 export class LocationService {
   repo:FileRepository;

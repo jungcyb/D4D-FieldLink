@@ -1,4 +1,5 @@
 "use client";
+import {sampleTimeMs} from "@/lib/sampling";
 import { useEffect, useRef, useState } from "react";
 import type { Envelope } from "@/lib/signal";
 import { fitRange, nearestPoint, valueDomain, formatValue, type PlotRange } from "@/lib/plot";
@@ -13,7 +14,7 @@ export default function RawCanvas({window: signal, unit = "V", labels, onInspect
   const view = range ? fitRange(...range, signal.count) : [0, Math.max(1, signal.count - 1)] as PlotRange;
   const [start, end] = view, span = end - start;
   const point = hover === null ? undefined : nearestPoint(signal.points, hover);
-  const positionLabel = (index: number) => labels ? labels[Math.round(index)] || "" : formatValue(index / signal.sps * 1000) + " ms";
+  const positionLabel = (index: number) => labels ? labels[Math.round(index)] || "" : formatValue(sampleTimeMs(index,signal.sps)) + " ms";
   function zoom(factor: number) { onInspect?.(); const center = (start + end) / 2; setRange(fitRange(center - span * factor / 2, center + span * factor / 2, signal.count)); }
   function pan(direction: number) { onInspect?.(); setRange(fitRange(start + span * direction / 2, end + span * direction / 2, signal.count)); }
   useEffect(() => {
@@ -36,7 +37,7 @@ export default function RawCanvas({window: signal, unit = "V", labels, onInspect
         const index = start + (end - start) * i / 5, xx = x(index);
         ctx.beginPath(); ctx.moveTo(xx, TOP); ctx.lineTo(xx, h - BOTTOM); ctx.stroke();
         ctx.textAlign = i === 0 ? "left" : i === 5 ? "right" : "center";
-        ctx.fillText(labels ? labels[Math.round(index)] || "" : formatValue(index / signal.sps * 1000), xx, h - 17);
+        ctx.fillText(labels ? labels[Math.round(index)] || "" : formatValue(sampleTimeMs(index,signal.sps)), xx, h - 17);
       }
       ctx.textAlign = "left"; ctx.fillText(unit, 10, 14);
       ctx.textAlign = "right"; ctx.fillText(labels ? "KST" : "ms", width - RIGHT, 14);

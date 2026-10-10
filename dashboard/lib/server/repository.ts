@@ -4,7 +4,11 @@ import { randomUUID } from "node:crypto";
 import type { Mode, Store } from "../types.ts";
 import { emptyStore, makeDemoStore } from "./seed.ts";
 
-export function configuredMode(): Mode { return process.env.DAQ_MODE === "demo" ? "demo" : "external"; }
+/** next dev uses seeded mock devices; next start uses the isolated real-device store. */
+export function configuredMode(environment: {DAQ_MODE?: string; NODE_ENV?: string} = process.env): Mode {
+  if (environment.DAQ_MODE === "demo" || environment.DAQ_MODE === "external") return environment.DAQ_MODE;
+  return environment.NODE_ENV === "development" ? "demo" : "external";
+}
 export function dataDirectory(): string { return resolve(/*turbopackIgnore: true*/ process.env.DATA_DIR || "data"); }
 /** Single-process local PMVP repository. All read-modify-write operations are synchronous.
  * Replace this module with a transactional DB repository for multi-instance deployment. */
