@@ -38,55 +38,6 @@
 #include <string.h>
 
 /*
- * IPC Notify
- */
-#include <drivers/ipc_notify.h>
-#include <drivers/ipc_notify/v0/ipc_notify_v0.h>
-
-
-/*
- * IPC RP Message
- */
-#include <drivers/ipc_rpmsg.h>
-
-/* Number of CPUs that are enabled for IPC RPMessage */
-#define IPC_RPMESSAGE_NUM_CORES           (6U)
-/* Number of VRINGs for the numner of CPUs that are enabled for IPC */
-#define IPC_RPMESSAGE_NUM_VRINGS          (IPC_RPMESSAGE_NUM_CORES*(IPC_RPMESSAGE_NUM_CORES-1))
-/* Number of a buffers in a VRING, i.e depth of VRING queue */
-#define IPC_RPMESSAGE_NUM_VRING_BUF       (8U)
-/* Max size of a buffer in a VRING */
-#define IPC_RPMESSAGE_MAX_VRING_BUF_SIZE  (128U)
-/* Size of each VRING is
- *     number of buffers x ( size of each buffer + space for data structures of one buffer (32B) )
- */
-#define IPC_RPMESSAGE_VRING_SIZE          RPMESSAGE_VRING_SIZE(IPC_RPMESSAGE_NUM_VRING_BUF, IPC_RPMESSAGE_MAX_VRING_BUF_SIZE)
-
-/* Total Shared memory size used for IPC */
-#define IPC_SHARED_MEM_SIZE               (0U)
-
-/* Shared Memory Used for IPC.
-*
-* IMPORTANT: Make sure of below,
-* - The section defined below should be placed at the exact same location in memory for all the CPUs
-* - The memory should be marked as non-cached for all the CPUs
-* - The section should be marked as NOLOAD in all the CPUs linker command file
-*/
-uint8_t gIpcSharedMem[IPC_SHARED_MEM_SIZE] __attribute__((aligned(128), section(".bss.ipc_vring_mem")));
-
-/* This function is called within IpcNotify_init, this function returns core specific IPC config */
-void IpcNotify_getConfig(IpcNotify_InterruptConfig **interruptConfig, uint32_t *interruptConfigNum)
-{
-    /* extern globals that are specific to this core */
-    extern IpcNotify_InterruptConfig gIpcNotifyInterruptConfig_r5fss0_0[];
-    extern uint32_t gIpcNotifyInterruptConfigNum_r5fss0_0;
-
-    *interruptConfig = &gIpcNotifyInterruptConfig_r5fss0_0[0];
-    *interruptConfigNum = gIpcNotifyInterruptConfigNum_r5fss0_0;
-}
-
-
-/*
  * MCSPI
  */
 
@@ -270,67 +221,6 @@ void System_init(void)
     /* Now we can do pinmux */
     Pinmux_init();
     /* finally we initialize all peripheral drivers */
-    /* IPC Notify */
-    {
-        IpcNotify_Params notifyParams;
-        int32_t status;
-
-        /* initialize parameters to default */
-        IpcNotify_Params_init(&notifyParams);
-
-        /* specify the priority of IPC Notify interrupt */
-        notifyParams.intrPriority = 15U;
-
-        /* specify the core on which this API is called */
-        notifyParams.selfCoreId = CSL_CORE_ID_R5FSS0_0;
-
-        /* list the cores that will do IPC Notify with this core
-        * Make sure to NOT list 'self' core in the list below
-        */
-        notifyParams.numCores = 5;
-        notifyParams.coreIdList[0] = CSL_CORE_ID_R5FSS0_1;
-        notifyParams.coreIdList[1] = CSL_CORE_ID_R5FSS1_0;
-        notifyParams.coreIdList[2] = CSL_CORE_ID_R5FSS1_1;
-        notifyParams.coreIdList[3] = CSL_CORE_ID_M4FSS0_0;
-        notifyParams.coreIdList[4] = CSL_CORE_ID_A53SS0_0;
-
-        notifyParams.isMailboxIpcEnabled = 0;
-
-        notifyParams.isCrcEnabled = 0;
-
-        notifyParams.isIPCIntrRouter = 0;
-
-        /* initialize the IPC Notify module */
-        status = IpcNotify_init(&notifyParams);
-        DebugP_assert(status==SystemP_SUCCESS);
-
-    }
-    /* IPC RPMessage */
-    {
-        RPMessage_Params rpmsgParams;
-        int32_t status;
-
-        /* initialize parameters to default */
-        RPMessage_Params_init(&rpmsgParams);
-
-        /* TX VRINGs */
-        rpmsgParams.vringTxBaseAddr[CSL_CORE_ID_R5FSS0_1] = (uintptr_t)(&gIpcSharedMem[]);
-        rpmsgParams.vringTxBaseAddr[CSL_CORE_ID_R5FSS1_0] = (uintptr_t)(&gIpcSharedMem[]);
-        rpmsgParams.vringTxBaseAddr[CSL_CORE_ID_R5FSS1_1] = (uintptr_t)(&gIpcSharedMem[]);
-        rpmsgParams.vringTxBaseAddr[CSL_CORE_ID_M4FSS0_0] = (uintptr_t)(&gIpcSharedMem[]);
-        rpmsgParams.vringTxBaseAddr[CSL_CORE_ID_A53SS0_0] = (uintptr_t)(&gIpcSharedMem[]);
-        /* RX VRINGs */
-        /* Other VRING properties */
-        rpmsgParams.vringSize = IPC_RPMESSAGE_VRING_SIZE;
-        rpmsgParams.vringNumBuf = IPC_RPMESSAGE_NUM_VRING_BUF;
-        rpmsgParams.vringMsgSize = IPC_RPMESSAGE_MAX_VRING_BUF_SIZE;
-        rpmsgParams.isCrcEnabled = 0;
-
-        /* initialize the IPC RP Message module */
-        status = RPMessage_init(&rpmsgParams);
-        DebugP_assert(status==SystemP_SUCCESS);
-    }
-
     MCSPI_init();
     /* UDMA */
     {
@@ -349,9 +239,6 @@ void System_init(void)
 
 void System_deinit(void)
 {
-    RPMessage_deInit();
-    IpcNotify_deInit();
-
     MCSPI_deinit();
     /* UDMA */
     {

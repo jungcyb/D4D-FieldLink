@@ -9,7 +9,6 @@
 /**
  * Import the modules used in this configuration.
  */
-const ipc             = scripting.addModule("/drivers/ipc/ipc");
 const mcspi           = scripting.addModule("/drivers/mcspi/mcspi", {}, false);
 const mcspi1          = mcspi.addInstance();
 const gpio            = scripting.addModule("/drivers/gpio/gpio", {}, false);
@@ -47,8 +46,6 @@ const section11       = section.addInstance();
 /**
  * Write custom configuration values to the imported modules.
  */
-ipc.a53ss0_0 = "notify_rpmsg";
-
 mcspi1.$name                       = "CONFIG_ADS1263_MCSPI";
 mcspi1.intrEnable                  = "POLLED";
 mcspi1.inputSelect                 = "0";

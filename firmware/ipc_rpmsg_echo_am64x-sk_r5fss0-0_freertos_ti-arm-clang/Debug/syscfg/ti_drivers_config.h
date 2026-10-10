@@ -54,16 +54,6 @@ void System_init(void);
 void System_deinit(void);
 
 /*
- * IPC Notify
- */
-#include <drivers/ipc_notify.h>
-
-/*
- * IPC RPMessage
- */
-#include <drivers/ipc_rpmsg.h>
-
-/*
  * MCSPI
  */
 #include <drivers/mcspi.h>
