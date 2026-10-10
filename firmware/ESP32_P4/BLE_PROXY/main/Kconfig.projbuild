@@ -42,6 +42,24 @@ menu "FieldLink BLE proxy"
             When exceeded, the client is disconnected ("slow client"),
             the same policy as the AM6442 daemon.
 
+    config FIELDLINK_DAQ_EXPOSED_CHANNELS
+        int "Channels advertised to the collector"
+        range 1 8
+        default 3
+        help
+            Only CH0..CH(n-1) appear in discovery/HELLO/STATUS and are
+            median-filtered. The wire frame still carries 8 slots; the
+            unused ones are sent as mid-scale (0 V).
+
+    config FIELDLINK_DAQ_MEDIAN_WINDOW
+        int "Median filter window (samples)"
+        range 1 32
+        default 10
+        help
+            Sliding median over the last N samples of each advertised
+            channel, applied before streaming. 1 disables filtering.
+            Even windows average the two middle samples.
+
     config FIELDLINK_DAQ_HOSTNAME_PREFIX
         string "Hostname prefix reported in discovery"
         default "fieldlink-p4"

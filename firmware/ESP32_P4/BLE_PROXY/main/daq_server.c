@@ -47,8 +47,15 @@
 
 #define MODEL               "ESP32-P4-BLE-PROXY"
 #define RATE_GROUP_ID       "ble.scan"
-#define RATE_GROUP_LABEL    "BLE 8채널 공통"
+#define RATE_GROUP_LABEL    "BLE %u채널 공통"
 #define FRAME_SIZE          sizeof(Ads8688StreamFrame)
+
+/* Only the first EXPOSED_CHANNELS slots are advertised and filtered; the
+ * wire frame keeps all 8 slots (the collector expects 8) and the rest
+ * are pinned to mid-scale (0 V). */
+#define EXPOSED_CHANNELS    CONFIG_FIELDLINK_DAQ_EXPOSED_CHANNELS
+#define MEDIAN_WINDOW       CONFIG_FIELDLINK_DAQ_MEDIAN_WINDOW
+#define MID_SCALE_CODE      32768
 
 #define MSG_HELLO           0x0001
 #define MSG_STATUS          0x0002
@@ -111,6 +118,11 @@ static volatile uint32_t s_dropped_total;
 static bool s_have_sequence;
 static uint32_t s_last_sequence;
 static int64_t s_last_frame_us;
+
+/* Sliding median window per exposed channel. Server-task only. */
+static uint16_t s_median_hist[EXPOSED_CHANNELS][MEDIAN_WINDOW];
+static uint8_t s_median_count;
+static uint8_t s_median_head;
 
 /* Server-task only. */
 static char s_json[4096];
@@ -188,7 +200,7 @@ static void jb_string(jbuf_t *b, const char *str)
 static void jb_channel_ids(jbuf_t *b)
 {
     jb_printf(b, "[");
-    for (unsigned ch = 0; ch < ADS8688_STREAM_CHANNELS; ch++) {
+    for (unsigned ch = 0; ch < EXPOSED_CHANNELS; ch++) {
         jb_printf(b, "%s\"CH%u\"", ch ? "," : "", ch);
     }
     jb_printf(b, "]");
@@ -199,8 +211,8 @@ static void jb_channel_ids(jbuf_t *b)
 static void jb_channel_caps(jbuf_t *b, bool compact)
 {
     jb_printf(b, "{\"schemaVersion\":1,\"channelCount\":%u,\"channels\":[",
-              ADS8688_STREAM_CHANNELS);
-    for (unsigned ch = 0; ch < ADS8688_STREAM_CHANNELS; ch++) {
+              EXPOSED_CHANNELS);
+    for (unsigned ch = 0; ch < EXPOSED_CHANNELS; ch++) {
         if (compact) {
             jb_printf(b, "%s[\"CH%u\",\"BLE CH%u\",\"BLE\",\"CH%u\",%" PRIu32
                          ",\"V\",\"" RATE_GROUP_ID "\",true]",
@@ -216,12 +228,12 @@ static void jb_channel_caps(jbuf_t *b, bool compact)
     }
     jb_printf(b, "],\"sampleRateGroups\":[");
     if (compact) {
-        jb_printf(b, "[\"" RATE_GROUP_ID "\",\"" RATE_GROUP_LABEL "\",");
+        jb_printf(b, "[\"" RATE_GROUP_ID "\",\"" RATE_GROUP_LABEL "\",", EXPOSED_CHANNELS);
         jb_channel_ids(b);
         jb_printf(b, ",%" PRIu32 ",false,null,null,null]", s_scan_rate);
     } else {
         jb_printf(b, "{\"id\":\"" RATE_GROUP_ID "\",\"label\":\"" RATE_GROUP_LABEL
-                     "\",\"channelIds\":");
+                     "\",\"channelIds\":", EXPOSED_CHANNELS);
         jb_channel_ids(b);
         jb_printf(b, ",\"currentHz\":%" PRIu32 ",\"writable\":false}", s_scan_rate);
     }
@@ -542,6 +554,43 @@ static void handle_discovery(void)
 
 /* ----- live stream ---------------------------------------------------- */
 
+/* Median of the last MEDIAN_WINDOW samples (fewer while the window
+ * fills); an even count averages the two middle values. */
+static uint16_t median_of(const uint16_t *hist, uint8_t count)
+{
+    uint16_t sorted[MEDIAN_WINDOW];
+    for (uint8_t i = 0; i < count; i++) {
+        uint16_t v = hist[i];
+        uint8_t j = i;
+        for (; j > 0 && sorted[j - 1] > v; j--) {
+            sorted[j] = sorted[j - 1];
+        }
+        sorted[j] = v;
+    }
+    if (count & 1) {
+        return sorted[count / 2];
+    }
+    return (uint16_t)(((uint32_t)sorted[count / 2 - 1] + sorted[count / 2] + 1) / 2);
+}
+
+/* Filter the exposed channels in place, blank the rest, and re-sign. */
+static void filter_frame(Ads8688StreamFrame *f)
+{
+    for (unsigned ch = 0; ch < EXPOSED_CHANNELS; ch++) {
+        s_median_hist[ch][s_median_head] = f->samples[ch];
+    }
+    s_median_head = (s_median_head + 1) % MEDIAN_WINDOW;
+    if (s_median_count < MEDIAN_WINDOW) {
+        s_median_count++;
+    }
+    for (unsigned ch = 0; ch < ADS8688_STREAM_CHANNELS; ch++) {
+        f->samples[ch] = ch < EXPOSED_CHANNELS
+                             ? median_of(s_median_hist[ch], s_median_count)
+                             : MID_SCALE_CODE;
+    }
+    f->crc32 = Ads8688Stream_crc32(f, offsetof(Ads8688StreamFrame, crc32));
+}
+
 static void drain_live_queue(void)
 {
     live_item_t item;
@@ -549,7 +598,16 @@ static void drain_live_queue(void)
     uint8_t v2[16 + FRAME_SIZE];
 
     while (xQueueReceive(s_live_queue, &item, 0) == pdTRUE) {
-        const Ads8688StreamFrame *f = &item.frame;
+        Ads8688StreamFrame *f = &item.frame;
+
+        /* A new sensor session restarts the sequence; don't let the
+         * previous session's samples leak into the median. */
+        if (!s_have_sequence || f->sequence <= s_last_sequence ||
+            f->scanRateHz != s_scan_rate) {
+            s_median_count = 0;
+            s_median_head = 0;
+        }
+        filter_frame(f);
 
         if (s_have_sequence && f->sequence != s_last_sequence + 1) {
             s_gaps_total += f->sequence - s_last_sequence - 1;
