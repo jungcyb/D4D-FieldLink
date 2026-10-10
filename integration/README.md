@@ -28,4 +28,5 @@ Environment variables:
 - `BOARD_DISCOVERY_ADDRESS`: LAN broadcast, default `255.255.255.255`
 - `BOARD_DISCOVERY_PORT`: default `8764`
 - `BOARD_DISCOVERY_INTERVAL_MS`: rediscovery period for new or returning boards, default `2000`
+- `BOARD_STATUS_TIMEOUT_MS`: a connected board that leaves the 10 s STATUS probe unanswered this long is dropped and rediscovered, default `8000`
 - `COLLECTOR_STATE_DIR`: persistent cursor directory

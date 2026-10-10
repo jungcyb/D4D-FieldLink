@@ -112,6 +112,12 @@ static char s_uuid_str[37];
 static char s_hostname[32];
 
 static uint32_t s_scan_rate = CONFIG_FIELDLINK_DAQ_DEFAULT_SCAN_RATE;
+/* record_id = boot_count << RECORD_BOOT_SHIFT | per-boot counter, so ids
+ * keep increasing across reboots like the AM6442's persistent ids. The
+ * collector derives batch ids from them and the dashboard drops batch
+ * ids it has already seen, so restarting at 1 would discard every frame
+ * until the old ids were passed. */
+#define RECORD_BOOT_SHIFT   40
 static uint64_t s_next_record_id = 1;
 static uint32_t s_frames_total;
 static uint32_t s_gaps_total;
@@ -765,6 +771,19 @@ static esp_err_t load_identity(void)
                      esp_err_to_name(err));
         }
     }
+
+    uint32_t boots = 0;
+    nvs_get_u32(nvs, "boots", &boots);
+    boots++;
+    esp_err_t err = nvs_set_u32(nvs, "boots", boots);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "could not persist boot count (%s); record ids may repeat",
+                 esp_err_to_name(err));
+    }
+    s_next_record_id = ((uint64_t)boots << RECORD_BOOT_SHIFT) + 1;
     nvs_close(nvs);
 
     const uint8_t *u = s_uuid;
@@ -827,7 +846,8 @@ esp_err_t daq_server_start(void)
     ESP_RETURN_ON_FALSE(xTaskCreate(server_task, "daq_server", 6144, NULL, 5, NULL) == pdPASS,
                         ESP_ERR_NO_MEM, TAG, "task");
 
-    ESP_LOGI(TAG, "uuid=%s hostname=%s tcp=%d udp=%d", s_uuid_str, s_hostname,
-             CONFIG_FIELDLINK_DAQ_TCP_PORT, CONFIG_FIELDLINK_DAQ_DISCOVERY_PORT);
+    ESP_LOGI(TAG, "uuid=%s hostname=%s tcp=%d udp=%d first_record=%" PRIu64, s_uuid_str,
+             s_hostname, CONFIG_FIELDLINK_DAQ_TCP_PORT, CONFIG_FIELDLINK_DAQ_DISCOVERY_PORT,
+             s_next_record_id);
     return ESP_OK;
 }

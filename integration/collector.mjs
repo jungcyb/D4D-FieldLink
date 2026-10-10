@@ -193,7 +193,12 @@ async function runConnection(board) {
     const timestamped = hello.capabilities?.includes("timestamped_stream"), streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
     await client.request(streamType);
     const afterStart = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, target = afterStart?.latest_record_id == null ? BigInt(0) : BigInt(afterStart.latest_record_id);
-    const heartbeat = setInterval(() => { void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label,ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error)); }, 10000);
+    // Kernel keepalive takes minutes to notice a board that lost power or changed IP, so probe it with STATUS and drop the link if it stops answering.
+    const heartbeat = setInterval(() => {
+      void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label,ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error));
+      const timeout = setTimeout(() => client.socket.destroy(new Error("board stopped answering STATUS")), Number(process.env.BOARD_STATUS_TIMEOUT_MS || 8000));
+      client.request(TYPES.STATUS).catch(() => {}).finally(() => clearTimeout(timeout));
+    }, 10000);
     log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
     let replayCursor = cursor ?? target;
     try {
@@ -213,7 +218,7 @@ async function main() {
       const boards = await discoverBoards(); if (!boards.length && !connections.size) log("collector retry", "no board answered UDP discovery");
       for (const board of boards) {
         const key = board.uuid || `${board.ip}:${board.port}`; if (connections.has(key) || (retryAt.get(key) || 0) > Date.now()) continue;
-        connections.set(key, runConnection(board).catch(error => log("collector retry", `${board.hostname || key} ${error instanceof Error ? error.message : String(error)}`)).finally(() => { connections.delete(key); retryAt.set(key, Date.now() + 2000); }));
+        connections.set(key, runConnection(board).then(() => log("collector disconnected", board.hostname || key)).catch(error => log("collector retry", `${board.hostname || key} ${error instanceof Error ? error.message : String(error)}`)).finally(() => { connections.delete(key); retryAt.set(key, Date.now() + 2000); }));
       }
     } catch (error) { log("discovery failed", error instanceof Error ? error.message : String(error)); }
     if (!stopping) await sleep(discoveryInterval);
