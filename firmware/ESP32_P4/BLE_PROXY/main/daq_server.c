@@ -55,6 +55,7 @@
  * are pinned to mid-scale (0 V). */
 #define EXPOSED_CHANNELS    CONFIG_FIELDLINK_DAQ_EXPOSED_CHANNELS
 #define MEDIAN_WINDOW       CONFIG_FIELDLINK_DAQ_MEDIAN_WINDOW
+#define AVG_WINDOW          CONFIG_FIELDLINK_DAQ_MOVING_AVG_WINDOW
 #define MID_SCALE_CODE      32768
 
 #define MSG_HELLO           0x0001
@@ -119,10 +120,15 @@ static bool s_have_sequence;
 static uint32_t s_last_sequence;
 static int64_t s_last_frame_us;
 
-/* Sliding median window per exposed channel. Server-task only. */
+/* Per exposed channel: sliding median, then a moving average of the
+ * median output. Server-task only. */
 static uint16_t s_median_hist[EXPOSED_CHANNELS][MEDIAN_WINDOW];
 static uint8_t s_median_count;
 static uint8_t s_median_head;
+static uint16_t s_avg_hist[EXPOSED_CHANNELS][AVG_WINDOW];
+static uint32_t s_avg_sum[EXPOSED_CHANNELS];
+static uint8_t s_avg_count;
+static uint8_t s_avg_head;
 
 /* Server-task only. */
 static char s_json[4096];
@@ -573,7 +579,31 @@ static uint16_t median_of(const uint16_t *hist, uint8_t count)
     return (uint16_t)(((uint32_t)sorted[count / 2 - 1] + sorted[count / 2] + 1) / 2);
 }
 
-/* Filter the exposed channels in place, blank the rest, and re-sign. */
+static void filter_reset(void)
+{
+    s_median_count = 0;
+    s_median_head = 0;
+    s_avg_count = 0;
+    s_avg_head = 0;
+    memset(s_avg_sum, 0, sizeof(s_avg_sum));
+}
+
+/* Mean of the last AVG_WINDOW medians (fewer while the window fills),
+ * kept as a running sum. Advances the window for channel `ch`; the
+ * caller bumps s_avg_head/s_avg_count once per frame. */
+static uint16_t moving_average(unsigned ch, uint16_t value)
+{
+    if (s_avg_count == AVG_WINDOW) {
+        s_avg_sum[ch] -= s_avg_hist[ch][s_avg_head];
+    }
+    s_avg_hist[ch][s_avg_head] = value;
+    s_avg_sum[ch] += value;
+    uint8_t count = s_avg_count < AVG_WINDOW ? s_avg_count + 1 : AVG_WINDOW;
+    return (uint16_t)((s_avg_sum[ch] + count / 2) / count);
+}
+
+/* Filter the exposed channels in place (median, then moving average),
+ * blank the rest, and re-sign. */
 static void filter_frame(Ads8688StreamFrame *f)
 {
     for (unsigned ch = 0; ch < EXPOSED_CHANNELS; ch++) {
@@ -585,8 +615,12 @@ static void filter_frame(Ads8688StreamFrame *f)
     }
     for (unsigned ch = 0; ch < ADS8688_STREAM_CHANNELS; ch++) {
         f->samples[ch] = ch < EXPOSED_CHANNELS
-                             ? median_of(s_median_hist[ch], s_median_count)
+                             ? moving_average(ch, median_of(s_median_hist[ch], s_median_count))
                              : MID_SCALE_CODE;
+    }
+    s_avg_head = (s_avg_head + 1) % AVG_WINDOW;
+    if (s_avg_count < AVG_WINDOW) {
+        s_avg_count++;
     }
     f->crc32 = Ads8688Stream_crc32(f, offsetof(Ads8688StreamFrame, crc32));
 }
@@ -601,11 +635,10 @@ static void drain_live_queue(void)
         Ads8688StreamFrame *f = &item.frame;
 
         /* A new sensor session restarts the sequence; don't let the
-         * previous session's samples leak into the median. */
+         * previous session's samples leak into the filters. */
         if (!s_have_sequence || f->sequence <= s_last_sequence ||
             f->scanRateHz != s_scan_rate) {
-            s_median_count = 0;
-            s_median_head = 0;
+            filter_reset();
         }
         filter_frame(f);
 

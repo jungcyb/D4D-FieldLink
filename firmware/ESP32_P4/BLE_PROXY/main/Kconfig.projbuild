@@ -60,6 +60,15 @@ menu "FieldLink BLE proxy"
             channel, applied before streaming. 1 disables filtering.
             Even windows average the two middle samples.
 
+    config FIELDLINK_DAQ_MOVING_AVG_WINDOW
+        int "Moving average window (samples)"
+        range 1 32
+        default 10
+        help
+            Moving average over the last N median-filter outputs of each
+            advertised channel, applied after the median filter. 1
+            disables it.
+
     config FIELDLINK_DAQ_HOSTNAME_PREFIX
         string "Hostname prefix reported in discovery"
         default "fieldlink-p4"
