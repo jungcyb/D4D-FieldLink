@@ -16,11 +16,11 @@ export async function operationsHttp({request,url,path,svc,readJson,bytes,author
     try {
       const status=await controlDaq(board,command);
       svc.repository.mutate(store=>{
-        const current=store.daqs.find(d=>d.uuid===key)!;current.acquiring=status.acquiring;current.lastSeen=new Date().toISOString();
+        const current=store.daqs.find(d=>d.uuid===key)!;if(status.channel_capabilities)Object.assign(current,status.channel_capabilities);current.acquiring=status.acquiring;current.lastSeen=new Date().toISOString();
         const keepIndependent=!status.channelRatesReported&&current.sampling?.mode==="per-channel"&&command?.action!=="rate";
         if(keepIndependent&&current.sampling&&status.scan_rate_hz!=null){current.scanRateHz=status.scan_rate_hz;current.sampling={...current.sampling,commonRateHz:status.scan_rate_hz};}
         applyDaqInfo(store,current,{...(keepIndependent?{}:{sampling:status.sampling}),...(status.sensors?{sensors:status.sensors,inventoryComplete:status.inventoryComplete}:{})});
-        if(command)systemLog(store,"DAQ_ACQUISITION_CHANGED",command.action==="channel_rate"?`${command.channel} 샘플레이트 변경: ${command.sps} SPS`:command.action==="rate"?`공통 샘플레이트 변경: 채널당 ${status.scan_rate_hz} SPS`:status.acquiring?"보드 데이터 수집 시작":"보드 데이터 수집 정지",key,"info",{action:command.action,acquiring:status.acquiring,sps:status.scan_rate_hz});
+        if(command)systemLog(store,"DAQ_ACQUISITION_CHANGED",command.action==="channel_rate"?`${command.channel} 샘플레이트 변경: ${command.sps} SPS`:command.action==="rate"?`샘플레이트 변경: ${command.groupId||"공통"} ${command.rate} SPS`:status.acquiring?"보드 데이터 수집 시작":"보드 데이터 수집 정지",key,"info",{action:command.action,acquiring:status.acquiring,sps:status.scan_rate_hz});
       });
       return result({...status,sampling:svc.repository.read().daqs.find(d=>d.uuid===key)?.sampling||status.sampling});
     } catch(error) {

@@ -43,14 +43,20 @@
 
 HELLO/STATUS에서 위 `sensors`, `sampling`, `inventoryComplete` 필드를 그대로 제공할 수 있다. STATUS 값을 우선하며 없으면 HELLO 정보를 사용한다. 기존 `scan_rate_hz`만 있는 ADS8688 응답도 유지한다. 기존 모델은 8채널 공통 rate로 표시하며, channel_count가 있으면 그 값을 사용한다. 채널별 목록이 이미 별도로 수신된 경우 기존 공통 STATUS만으로 그 값을 일괄 덮어쓰지 않는다.
 
-현재 실행 중인 보드는 센서 목록과 개별 설정 기능을 아직 제공하지 않는다. 다음은 **신규 보드 구현용 제안 계약**이며 구현 전에는 백엔드가 채널별 변경 명령을 보내지 않는다.
+`feature/dev` 보드는 UDP discovery v2 및 TCP HELLO/STATUS의 `channel_capabilities`로 채널과 샘플레이트 그룹을 제공합니다. 검색은 v1도 함께 요청하여 기존 보드와 호환하며 동일 UUID에서는 v2 채널 정보를 우선합니다. ADC 입력 채널 목록과 물리 센서 목록은 별개입니다. 실제 센서가 없으면 운영자가 채널을 센서로 등록하거나 위 `sensors` 목록을 제공해야 합니다.
+
+- ADS8688 CH0–CH7: `ads8688.scan` 그룹, 10–2,000 정수 SPS. 8채널이 함께 변경됩니다.
+- ADS1263 AIN0/AIN1: 400 SPS 고정, AIN6/AIN7: 10 SPS 고정. `streamAvailable:false`이면 UI에 수집 연동 대기로 표시합니다.
+- capability에서 계산한 전체 합계는 설정된 모든 채널의 합계이며 스트림 연동 대기 채널을 포함합니다. 실제 수신량을 뜻하지 않습니다. 명시적 `sampling`이 있으면 우선합니다.
 
 | 명령 | HTTP 요청 | TCP 요청 | 조건 |
 |---|---|---|---|
-| 공통 기본값 | POST `/api/daqs/:uuid/acquisition` `{ "action":"rate", "rate":1500 }` | 기존 SET_RATE(0x0005), u32 big-endian | HELLO.capabilities에 sample_rate, 기존 10~2,000 정수 SPS |
-| 채널별 값 | 같은 API `{ "action":"channel_rate", "channel":"CH1", "sps":250 }` | 제안 SET_CHANNEL_RATE(0x000c), UTF-8 JSON `{ "channel":"CH1", "sps":250 }` | HELLO.capabilities에 channel_sample_rate 및 STATUS/HELLO의 해당 채널 |
+| 그룹 설정 | POST `/api/daqs/:uuid/acquisition` `{ "action":"rate", "groupId":"ads8688.scan", "rate":1500 }` | SET_RATE_GROUP(0x000c), UTF-8 JSON `{ "groupId":"ads8688.scan", "rateHz":1500 }` | sample_rate 지원, writable 그룹, minHz/maxHz/stepHz 검증 |
+| 기존 공통 설정 | 같은 API `{ "action":"rate", "rate":1500 }` | 그룹 capability 보드에서는 유일한 writable 그룹에 SET_RATE_GROUP, 기존 보드에서는 SET_RATE(0x0005), u32 big-endian | 기존 10–2,000 정수 SPS, writable 그룹이 여러 개면 groupId 필수 |
 
-신규 채널 명령 성공 응답 type은 0x800c, 실패는 기존 0xffff다. 백엔드는 보드 UUID·기능·채널 확인 후 명령을 보내고, ACK 뒤 STATUS를 다시 읽어 같은 채널의 sps가 요청과 일치할 때만 성공 처리한다. 0.01~1,000,000의 유한한 양수 채널 SPS를 지원하며, 실제 하드웨어 지원 범위는 보드가 검증해 거절해야 한다. 설정을 누르기 전에는 상태 조회 명령만 보낸다.
+성공 응답 type은 0x800c, 실패는 0xffff입니다. 백엔드는 UUID와 capability를 확인하고 ACK 이후 STATUS에서 그룹 및 모든 소속 채널의 rate를 검증합니다. 공통 그룹에 대한 개별 채널 변경은 거부합니다. 단일 채널 writable 그룹은 그룹 요청으로 변경할 수 있습니다.
+
+별도의 범용 보드가 `channel_capabilities` 없이 `channel_sample_rate`를 명시적으로 지원할 때만 기존 제안 계약 `{ "action":"channel_rate", "channel":"CH1", "sps":250 }`을 TCP 0x000c JSON `{ "channel":"CH1", "sps":250 }`으로 전송합니다. 이 제안 payload는 실제 ADS8688 그룹 제어에 보내지 않습니다. 그룹 ID를 받은 기존 보드에도 묵시적으로 공통 명령을 보내지 않습니다.
 
 기존 48-byte binary 프레임은 8채널 공통 scan rate 하나만 전달하므로 서로 다른 채널 rate를 표현하지 않는다. 미래 보드가 개별 rate로 수집한다면 실제 배치를 채널별로 분리해 JSON readings로 전달하거나 별도 binary 확장 버전을 합의해야 한다. 백엔드가 누락된 샘플을 임의 생성하거나 rate만 바꿔 기록하지 않는다.
 

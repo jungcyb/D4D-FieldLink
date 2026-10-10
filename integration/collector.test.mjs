@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import dgram from "node:dgram";
 import { crc32 } from "node:zlib";
-import { decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter } from "./collector.mjs";
+import { discover, decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter } from "./collector.mjs";
 
 test("ADS8688 straight-binary conversion preserves polarity", () => {
   assert.equal(rawCodeToVolts(0), -10.24); assert.equal(rawCodeToVolts(32768), 0); assert.ok(rawCodeToVolts(65535) > 10.239);
@@ -48,4 +49,22 @@ test("collector uses actual SPS for batch size and splits rate changes and recor
 });
 test("collector keeps high-rate batches inside the backend raw capacity",()=>{
   const writer=new CapturingWriter();for(let i=0;i<5000;i++)writer.add(rateFrame(i,10000));writer.closeBatch();assert.deepEqual(writer.batches.map(b=>b.length),[4096,904]);
+});
+
+test("discovery v2 exposes heterogeneous channel capabilities", () => {
+  const nonce=BigInt(7),hostname=Buffer.from("sk"),model=Buffer.from("dual-adc"),capability=Buffer.from(JSON.stringify({channelCount:2,channels:[["CH0","ADS8688 CH0","ADS8688","AIN0",1000,"V","ads8688.scan",true],["ADS1263-AIN0_AIN1","ADS1263 AIN0–AIN1","ADS1263","AIN0-AIN1",400,"code","ads1263.adc1",false]],sampleRateGroups:[["ads8688.scan","ADS8688 공통",["CH0"],1000,true,10,2000,1]]})),packet=Buffer.alloc(38+hostname.length+model.length+capability.length);
+  packet.write("A8DR");packet.writeUInt16BE(2,4);packet.writeBigUInt64BE(nonce,8);Buffer.alloc(16,1).copy(packet,16);packet.writeUInt16BE(8765,32);packet[34]=hostname.length;packet[35]=model.length;packet.writeUInt16BE(capability.length,36);hostname.copy(packet,38);model.copy(packet,38+hostname.length);capability.copy(packet,38+hostname.length+model.length);
+  const result=decodeDiscoveryResponse(packet,"192.168.0.240",nonce);assert.equal(result.channelCapabilities.channelCount,2);assert.equal(result.channelCapabilities.channels[1].id,"ADS1263-AIN0_AIN1");
+});
+
+test("collector discovery falls back to v1-only deployed boards",async t=>{
+  const socket=dgram.createSocket("udp4");await new Promise(resolve=>socket.bind(0,"127.0.0.1",resolve));
+  const keys=["BOARD_HOST","BOARD_DISCOVERY_PORT","BOARD_DISCOVERY_ADDRESS"],saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  t.after(()=>{socket.close();for(const key of keys){if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];}});
+  delete process.env.BOARD_HOST;process.env.BOARD_DISCOVERY_PORT=String(socket.address().port);process.env.BOARD_DISCOVERY_ADDRESS="127.0.0.1";
+  const versions=[];socket.on("message",(query,remote)=>{
+    const version=query.readUInt16BE(4);versions.push(version);if(version!==1)return;
+    const reply=Buffer.alloc(36);reply.write("A8DR");reply.writeUInt16BE(1,4);query.copy(reply,8,8,16);Buffer.alloc(16,1).copy(reply,16);reply.writeUInt16BE(8765,32);socket.send(reply,remote.port,remote.address);
+  });
+  const board=await discover();assert.equal(board.port,8765);assert.equal(board.uuid,"01010101-0101-0101-0101-010101010101");assert.deepEqual(versions.sort(),[1,2]);
 });

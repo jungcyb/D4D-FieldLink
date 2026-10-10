@@ -49,21 +49,41 @@ function message(type, requestId, payload = Buffer.alloc(0)) {
   const packet = Buffer.alloc(12 + payload.length); packet.writeUInt32BE(payload.length, 0); packet.writeUInt16BE(1, 4); packet.writeUInt16BE(type, 6); packet.writeUInt32BE(requestId, 8); payload.copy(packet, 12); return packet;
 }
 
-export function decodeDiscoveryResponse(packet, sourceIp, nonce) {
-  if (packet.length < 36 || packet.toString("ascii", 0, 4) !== "A8DR" || packet.readUInt16BE(4) !== 1 || packet.readUInt16BE(6) || packet.readBigUInt64BE(8) !== nonce) return null;
-  const hostnameBytes = packet[34], modelBytes = packet[35]; if (packet.length !== 36 + hostnameBytes + modelBytes) return null;
-  const hex = packet.subarray(16, 32).toString("hex"), uuid = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
-  return { uuid, ip: sourceIp, port: packet.readUInt16BE(32), hostname: packet.toString("utf8", 36, 36 + hostnameBytes), model: packet.toString("utf8", 36 + hostnameBytes) };
+function normalizeDiscoveryCapabilities(value) {
+  if (!value || !Array.isArray(value.channels) || !Array.isArray(value.sampleRateGroups) || value.channelCount !== value.channels.length) return null;
+  const channels = value.channels.map(channel => Array.isArray(channel) && channel.length === 8 ? {id:channel[0],label:channel[1],adc:channel[2],adcChannel:channel[3],sampleRateHz:channel[4],inputUnit:channel[5],rateGroupId:channel[6],streamAvailable:channel[7]} : channel);
+  const sampleRateGroups = value.sampleRateGroups.map(group => Array.isArray(group) && group.length === 8 ? {id:group[0],label:group[1],channelIds:group[2],currentHz:group[3],writable:group[4],...(group[5] == null ? {} : {minHz:group[5]}),...(group[6] == null ? {} : {maxHz:group[6]}),...(group[7] == null ? {} : {stepHz:group[7]})} : group);
+  return channels.every(channel => channel && typeof channel.id === "string" && Number.isFinite(channel.sampleRateHz)) && sampleRateGroups.every(group => group && typeof group.id === "string" && Array.isArray(group.channelIds)) ? {...value, channels, sampleRateGroups} : null;
 }
 
-async function discover() {
+export function decodeDiscoveryResponse(packet, sourceIp, nonce) {
+  if (packet.length < 36 || packet.toString("ascii", 0, 4) !== "A8DR" || ![1, 2].includes(packet.readUInt16BE(4)) || packet.readUInt16BE(6) || packet.readBigUInt64BE(8) !== nonce) return null;
+  const version = packet.readUInt16BE(4), hostnameBytes = packet[34], modelBytes = packet[35], headerBytes = version === 2 ? 38 : 36;
+  if (packet.length < headerBytes) return null;
+  const capabilitiesBytes = version === 2 ? packet.readUInt16BE(36) : 0;
+  if (packet.length !== headerBytes + hostnameBytes + modelBytes + capabilitiesBytes) return null;
+  const hex = packet.subarray(16, 32).toString("hex"), uuid = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  const hostname = packet.toString("utf8", headerBytes, headerBytes + hostnameBytes), modelOffset = headerBytes + hostnameBytes;
+  try {
+    const channelCapabilities = capabilitiesBytes ? normalizeDiscoveryCapabilities(JSON.parse(packet.toString("utf8", modelOffset + modelBytes))) : undefined;
+    if (capabilitiesBytes && !channelCapabilities) return null;
+    return { uuid, ip: sourceIp, port: packet.readUInt16BE(32), hostname, model: packet.toString("utf8", modelOffset, modelOffset + modelBytes), channelCapabilities };
+  } catch { return null; }
+}
+
+export async function discover() {
   if (process.env.BOARD_HOST) return { ip: process.env.BOARD_HOST, port: Number(process.env.BOARD_PORT || 8765), hostname: process.env.BOARD_LABEL || "AM6442-SK" };
-  const nonce = randomBytes(8).readBigUInt64BE(), query = Buffer.alloc(16); query.write("A8DQ", 0, "ascii"); query.writeUInt16BE(1, 4); query.writeBigUInt64BE(nonce, 8);
+  const nonce = randomBytes(8).readBigUInt64BE(), query = Buffer.alloc(16); query.write("A8DQ", 0, "ascii"); query.writeUInt16BE(2, 4); query.writeBigUInt64BE(nonce, 8);
   return new Promise((resolve, reject) => {
-    const socket = dgram.createSocket("udp4"), found = [];
-    socket.on("message", (packet, source) => { const board = decodeDiscoveryResponse(packet, source.address, nonce); if (board) found.push(board); });
-    socket.on("error", reject);
-    socket.bind(0, "0.0.0.0", () => { socket.setBroadcast(true); socket.send(query, Number(process.env.BOARD_DISCOVERY_PORT || 8764), process.env.BOARD_DISCOVERY_ADDRESS || "255.255.255.255"); setTimeout(() => { socket.close(); found.length ? resolve(found[0]) : reject(new Error("ADS8688 board not found by UDP discovery")); }, 1000); });
+    const socket=dgram.createSocket("udp4"),found=new Map();let finished=false,timer;
+    const finish=error=>{if(finished)return;finished=true;clearTimeout(timer);socket.close();const board=[...found.values()][0];error?reject(error):board?resolve(board):reject(new Error("ADS8688 board not found by UDP discovery"));};
+    socket.on("message",(packet,source)=>{const board=decodeDiscoveryResponse(packet,source.address,nonce);if(board&&(board.channelCapabilities||!found.get(board.uuid)?.channelCapabilities))found.set(board.uuid,board);});
+    socket.on("error",finish);
+    socket.bind(0,"0.0.0.0",()=>{
+      socket.setBroadcast(true);timer=setTimeout(()=>finish(),1000);
+      const legacy=Buffer.from(query);legacy.writeUInt16BE(1,4);
+      for(const request of [query,legacy])socket.send(request,Number(process.env.BOARD_DISCOVERY_PORT||8764),process.env.BOARD_DISCOVERY_ADDRESS||"255.255.255.255",error=>{if(error)finish(error);});
+    });
   });
 }
 
@@ -152,7 +172,8 @@ function backlogPayload(after, limit = 2000) { const payload = Buffer.alloc(12);
 async function runConnection(board) {
   const client = await connect(board.ip, board.port); activeClient = client; const hello = await client.request(TYPES.HELLO), uuid = hello.uuid;
   const status=await client.request(TYPES.STATUS);
-  const info={...(status.sensors!==undefined?{sensors:status.sensors,inventoryComplete:status.inventoryComplete}:hello.sensors!==undefined?{sensors:hello.sensors,inventoryComplete:hello.inventoryComplete}:{}),...(status.sampling!==undefined?{sampling:status.sampling}:hello.sampling!==undefined?{sampling:hello.sampling}:{})};
+  const channelCapabilities=status.channel_capabilities||hello.channel_capabilities||board.channelCapabilities;
+  const info={...(channelCapabilities||{}),...(status.sensors!==undefined?{sensors:status.sensors,inventoryComplete:status.inventoryComplete}:hello.sensors!==undefined?{sensors:hello.sensors,inventoryComplete:hello.inventoryComplete}:{}),...(status.sampling!==undefined?{sampling:status.sampling}:hello.sampling!==undefined?{sampling:hello.sampling}:{})};
   await dashboard("/edge/boards", { method: "POST", body: JSON.stringify({ uuid, label: board.hostname || hello.model || "AM6442-SK", ip: board.ip, port: board.port, ...info }) });
   const recoveries = await dashboard(`/edge/recovery?daqUuid=${encodeURIComponent(uuid)}`), recovery = recoveries.find(plan => plan.status === "pending" || plan.status === "receiving") || null;
   const archive = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, earliest = archive?.earliest_record_id == null ? null : BigInt(archive.earliest_record_id), cursor = recoveryCursor(recovery, earliest);
@@ -162,7 +183,7 @@ async function runConnection(board) {
   const timestamped = hello.capabilities?.includes("timestamped_stream"), streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
   await client.request(streamType);
   const afterStart = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, target = afterStart?.latest_record_id == null ? BigInt(0) : BigInt(afterStart.latest_record_id);
-  const heartbeat = setInterval(() => { void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({ uuid, label: board.hostname || hello.model || "AM6442-SK", ip: board.ip, port: board.port }) }).catch(error => client.socket.destroy(error)); }, 10000);
+  const heartbeat = setInterval(() => { void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label:board.hostname||hello.model||"AM6442-SK",ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error)); }, 10000);
   log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
   let replayCursor = cursor ?? target;
   try {

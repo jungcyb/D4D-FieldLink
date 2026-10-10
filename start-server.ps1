@@ -21,6 +21,7 @@ $env:DAQ_MODE = 'external'
 $env:DATA_DIR = Join-Path $repoRoot 'dashboard\data'
 $env:DASHBOARD_URL = "http://127.0.0.1:$Port"
 $env:BOARD_DISCOVERY_ADDRESS = $DiscoveryAddress
+$env:DAQ_DISCOVERY_ADDRESS = $DiscoveryAddress
 $env:BOARD_HOST = $BoardHost
 
 Write-Host 'Building FIELDLINK dashboard for LAN access...'

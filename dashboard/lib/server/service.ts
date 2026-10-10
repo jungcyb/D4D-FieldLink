@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { minMaxEnvelope } from "../signal.ts";
 import {parseSensorPrediction,predictionFrame} from "./edge-prediction.ts";
 import {parseDaqInfo,applyDaqInfo} from "./daq-info.ts";
-import {channelKey,channelRate} from "../daq-sampling.ts";
+import {channelKey,channelRate,samplingFromCapabilities} from "../daq-sampling.ts";
 import type { Store, BoardResponse, Daq, Equipment, Sensor, Diagnosis, Task, Reading, Snapshot, SensorView } from "../types.ts";
 import { FileRepository } from "./repository.ts";
 import { check, object, text, numeric, choice, uuid, ip, timestamp, ApiError } from "./validation.ts";
-import { Ads8688DiscoveryAdapter, DemoDiscoveryAdapter } from "./adapters.ts";
+import { Ads8688DiscoveryAdapter, DemoDiscoveryAdapter, normalizeCapabilities } from "./adapters.ts";
 import type { DiscoveryAdapter } from "./adapters.ts";
 import { demoValue, rawSamples, DEMO_BOARDS } from "./seed.ts";
 
@@ -86,9 +86,13 @@ export class MaintenanceService {
   }
   upsertBoard(input: unknown): Daq {
     const data = object(input);
-    const response: BoardResponse = { uuid: uuid(data.uuid), label: text(data.label || `DAQ ${String(data.uuid).slice(0, 8)}`, "DAQ 이름"), ip: ip(data.ip), port: numeric(data.port, "TCP 포트", 1, 65535) };
+    const hasCapabilities = data.channelCount != null || data.channels != null || data.sampleRateGroups != null;
+    const capabilities = hasCapabilities ? normalizeCapabilities(data) : null;
+    check(!hasCapabilities || capabilities, "DAQ 채널 capability 형식이 올바르지 않습니다.");
+    const response: BoardResponse = { uuid: uuid(data.uuid), label: text(data.label || `DAQ ${String(data.uuid).slice(0, 8)}`, "DAQ 이름"), ip: ip(data.ip), port: numeric(data.port, "TCP 포트", 1, 65535), ...(capabilities || {}) };
     check(Number.isInteger(response.port), "TCP 포트는 정수여야 합니다.");
     const info=parseDaqInfo(data);
+    if(capabilities&&!info.sampling)info.sampling=samplingFromCapabilities(capabilities);
     return this.repository.mutate(store => {
       const existing = store.daqs.find(d => d.uuid === response.uuid);
       if (existing) { Object.assign(existing, response, { lastSeen: iso() }); applyDaqInfo(store,existing,info); return existing; }
@@ -136,7 +140,7 @@ export class MaintenanceService {
       const fields = { daqUuid, channel: text(data.channel, "채널", 40), name: text(data.name, "센서명"), type: choice(data.type, ["vibration", "temperature", "current", "analog"] as const, "센서 종류"), position: text(data.position, "부착 위치"), unit: text(data.unit, "단위", 20), sps };
       check(!store.sensors.some(s => s.daqUuid === daqUuid && channelKey(s.channel) === channelKey(fields.channel) && s.id !== id), "이 DAQ에 이미 등록된 채널입니다.", 409, "DUPLICATE_CHANNEL");
       if (existing) { Object.assign(existing, fields); existing.registrationSource="manual"; return existing; }
-      const sensor: Sensor = { id: randomUUID(), registrationSource:"manual", ...fields, calibration: { scale: 1, offset: 0, inputUnit: store.mode === "demo" ? fields.unit : "V", updatedAt: null }, photo: null, createdAt: iso() }; store.sensors.push(sensor); return sensor;
+      const sensor: Sensor = { id: randomUUID(), registrationSource:"manual", ...fields, calibration: { scale: 1, offset: 0, inputUnit: data.inputUnit == null ? daq.channels?.find(c=>channelKey(c.id)===channelKey(fields.channel))?.inputUnit || (store.mode === "demo" ? fields.unit : "V") : text(data.inputUnit,"입력 단위",20), updatedAt: null }, photo: null, createdAt: iso() }; store.sensors.push(sensor); return sensor;
     });
   }
   calibrateSensor(sensorId: string, input: unknown): Sensor {

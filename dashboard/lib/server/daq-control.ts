@@ -1,32 +1,37 @@
 import net from "node:net";
-import type { Daq } from "../types.ts";
+import type { Daq, DaqChannel, SampleRateGroup } from "../types.ts";
 import { ApiError, check, object, text, numeric } from "./validation.ts";
 import type {DaqSampling,EdgeSensorInfo} from "../daq-types.ts";
 import {parseSampling,parseDaqInfo} from "./daq-info.ts";
-import {channelKey} from "../daq-sampling.ts";
-export interface AcquisitionStatus { uuid: string; acquiring: boolean; scan_rate_hz: number|null; frames_total: number; sequence_gaps_total: number; sampling:DaqSampling; sensors?:EdgeSensorInfo[]; inventoryComplete?:boolean; channelRatesReported:boolean; capabilities:{control:boolean;commonRate:boolean;channelRate:boolean} }
+import {channelKey,rateInGroup,samplingFromCapabilities} from "../daq-sampling.ts";
+import {normalizeCapabilities} from "./adapters.ts";
+export interface AcquisitionStatus { channel_capabilities?:{channelCount:number;channels:DaqChannel[];sampleRateGroups:SampleRateGroup[]}; uuid: string; acquiring: boolean; scan_rate_hz: number|null; frames_total: number; sequence_gaps_total: number; sampling:DaqSampling; sensors?:EdgeSensorInfo[]; inventoryComplete?:boolean; channelRatesReported:boolean; capabilities:{control:boolean;commonRate:boolean;channelRate:boolean} }
 export function normalizeAcquisitionStatus(input:unknown,hello:Record<string,unknown>,expectedUuid:string):AcquisitionStatus{
   const status=object(input);check(status.uuid===expectedUuid&&typeof status.acquiring==="boolean","보드 수집 상태를 확인할 수 없습니다.",502);
+  const rawCapabilities=status.channel_capabilities??hello.channel_capabilities,channelCapabilities=normalizeCapabilities(rawCapabilities);
+  check(rawCapabilities==null||channelCapabilities,"보드 채널 capability 형식이 올바르지 않습니다.",502);
   const reported=status.sampling!==undefined||hello.sampling!==undefined;
   let sampling:DaqSampling;
   if(reported)sampling=parseSampling(status.sampling??hello.sampling);
+  else if(channelCapabilities)sampling=samplingFromCapabilities(channelCapabilities);
   else {
     const rate=numeric(status.scan_rate_hz,"보드 scan rate",0.01,1000000),count=numeric(status.channel_count??hello.channel_count??8,"채널 수",1,100);check(Number.isInteger(count),"채널 수는 정수여야 합니다.");
     sampling={commonRateHz:rate,totalRateHz:rate*count,channels:Array.from({length:count},(_,i)=>({channel:`CH${i}`,sps:rate})),complete:true,mode:"uniform",totalSource:"sum",updatedAt:new Date().toISOString()};
   }
   const capabilities=Array.isArray(hello.capabilities)?hello.capabilities:[],info=parseDaqInfo({...(reported?{sampling:status.sampling??hello.sampling}:{}),sensors:status.sensors??hello.sensors,inventoryComplete:status.inventoryComplete??hello.inventoryComplete});
   const sensorRates=info.sensors?.filter(sensor=>sensor.sps!==undefined);
-  if(!reported&&sensorRates?.length)sampling={...sampling,channels:sensorRates.map(sensor=>({channel:sensor.channel,sps:sensor.sps??null})),complete:false,mode:"per-channel",totalRateHz:null,totalSource:"unknown"};
-  return{uuid:expectedUuid,acquiring:status.acquiring,scan_rate_hz:sampling.commonRateHz,frames_total:typeof status.frames_total==="number"?status.frames_total:0,sequence_gaps_total:typeof status.sequence_gaps_total==="number"?status.sequence_gaps_total:0,...info,sampling,channelRatesReported:reported||!!sensorRates?.length,capabilities:{control:capabilities.includes("acquisition_control"),commonRate:capabilities.includes("sample_rate"),channelRate:capabilities.includes("channel_sample_rate")}};
+  if(!reported&&!channelCapabilities&&sensorRates?.length)sampling={...sampling,channels:sensorRates.map(sensor=>({channel:sensor.channel,sps:sensor.sps??null})),complete:false,mode:"per-channel",totalRateHz:null,totalSource:"unknown"};
+  return{uuid:expectedUuid,acquiring:status.acquiring,scan_rate_hz:typeof status.scan_rate_hz==="number"?numeric(status.scan_rate_hz,"scan rate",.01,1000000):sampling.commonRateHz,frames_total:typeof status.frames_total==="number"?status.frames_total:0,sequence_gaps_total:typeof status.sequence_gaps_total==="number"?status.sequence_gaps_total:0,...info,sampling,...(channelCapabilities?{channel_capabilities:channelCapabilities}:{}),channelRatesReported:reported||!!channelCapabilities||!!sensorRates?.length,capabilities:{control:capabilities.includes("acquisition_control"),commonRate:capabilities.includes("sample_rate"),channelRate:capabilities.includes("channel_sample_rate")}};
 }
-export type AcquisitionCommand = { action: "start" | "stop" } | { action: "rate"; rate: number } | {action:"channel_rate";channel:string;sps:number};
+export type AcquisitionCommand = { action: "start" | "stop" } | { action: "rate"; groupId?:string; rate: number } | {action:"channel_rate";channel:string;sps:number};
 export function parseCommand(input: unknown): AcquisitionCommand {
   const data = object(input);
   check(["start", "stop", "rate", "channel_rate"].includes(String(data.action)), "수집 시작·정지·샘플레이트 변경 중 선택하세요.");
   if(data.action==="channel_rate")return{action:"channel_rate",channel:text(data.channel,"채널",40),sps:numeric(data.sps,"채널 SPS",0.01,1000000)};
+  if(data.action==="rate"&&data.groupId!==undefined)return{action:"rate",groupId:text(data.groupId,"샘플레이트 그룹",80),rate:numeric(data.rate,"SPS",.01,1000000)};
   if (data.action === "rate") {
-    check(typeof data.rate === "number" && Number.isInteger(data.rate) && data.rate >= 10 && data.rate <= 2000, "샘플레이트는 채널당 10~2,000 SPS의 정수여야 합니다.");
-    return { action: "rate", rate: data.rate };
+    const rate=numeric(data.rate,"공통 SPS",10,2000);check(Number.isInteger(rate),"공통 SPS는 정수여야 합니다.");
+    return {action:"rate",rate};
   }
   return { action: data.action as "start" | "stop" };
 }
@@ -70,7 +75,20 @@ export async function controlDaq(daq: Daq, command?: AcquisitionCommand): Promis
   try {
     const hello = object(await request(1));
     check(hello.uuid === daq.uuid, "접속 주소의 보드 UUID가 다릅니다. 명령을 전송하지 않았습니다.", 409);
+    const groups=normalizeCapabilities(hello.channel_capabilities);
+    check(hello.channel_capabilities==null||groups,"보드 채널 capability 형식이 올바르지 않습니다.",502);
+    let changedGroup:SampleRateGroup|undefined;
     if (command) {
+      if(groups&&(command.action==="rate"||command.action==="channel_rate")){
+        check(Array.isArray(hello.capabilities)&&hello.capabilities.includes("sample_rate"),"보드가 샘플레이트 제어를 지원하지 않습니다.",409);
+        const target=command.action==="rate"?command.groupId:groups.channels.find(row=>channelKey(row.id)===channelKey(command.channel))?.rateGroupId;
+        changedGroup=target?groups.sampleRateGroups.find(group=>group.id===target):command.action==="rate"&&groups.sampleRateGroups.filter(group=>group.writable).length===1?groups.sampleRateGroups.find(group=>group.writable):undefined;
+        check(changedGroup?.writable,"선택한 채널 집합의 샘플레이트는 변경할 수 없습니다.",409);
+        if(command.action==="channel_rate")check(changedGroup.channelIds.length===1,"이 채널은 공통 그룹에 속합니다. 그룹 설정에서 함께 변경하세요.",409);
+        const rate=command.action==="rate"?command.rate:command.sps;check(rateInGroup(changedGroup,rate),`${changedGroup.label} 허용 범위와 간격을 확인하세요.`,409);
+        await request(12,Buffer.from(JSON.stringify({groupId:changedGroup.id,rateHz:rate})));
+      }else{
+      if(command.action==="rate")check(!command.groupId,"보드가 그룹 제어를 지원하지 않습니다.",409);
       check(Array.isArray(hello.capabilities) && hello.capabilities.includes(command.action === "channel_rate" ? "channel_sample_rate" : command.action === "rate" ? "sample_rate" : "acquisition_control"), "보드가 이 제어 기능을 지원하지 않습니다.", 409);
       if(command.action==="channel_rate"){
         const before=normalizeAcquisitionStatus(await request(2),hello,daq.uuid),channel=before.sampling.channels.find(row=>channelKey(row.channel)===channelKey(command.channel));check(channel,"보드가 보고하지 않은 채널입니다.",409);
@@ -80,8 +98,9 @@ export async function controlDaq(daq: Daq, command?: AcquisitionCommand): Promis
         await request(command.action==="start"?3:command.action==="stop"?4:5,payload);
       }
     }
+    }
     const status = normalizeAcquisitionStatus(await request(2),hello,daq.uuid);
-    if (command) check(command.action === "channel_rate" ? status.sampling.channels.find(row=>channelKey(row.channel)===channelKey(command.channel))?.sps === command.sps : command.action === "rate" ? status.scan_rate_hz === command.rate : status.acquiring === (command.action === "start"), "명령 후 보드 상태가 일치하지 않습니다. 현재 상태를 다시 확인하세요.", 502);
+    if (command) check(changedGroup ? status.channel_capabilities?.sampleRateGroups.find(group=>group.id===changedGroup.id)?.currentHz === (command.action==="rate"?command.rate:command.action==="channel_rate"?command.sps:null) && changedGroup.channelIds.every(id=>status.channel_capabilities?.channels.find(row=>row.id===id)?.sampleRateHz === (command.action==="rate"?command.rate:command.action==="channel_rate"?command.sps:null)) : command.action === "channel_rate" ? status.sampling.channels.find(row=>channelKey(row.channel)===channelKey(command.channel))?.sps === command.sps : command.action === "rate" ? status.scan_rate_hz === command.rate : status.acquiring === (command.action === "start"), "명령 후 보드 상태가 일치하지 않습니다. 현재 상태를 다시 확인하세요.", 502);
     return status as unknown as AcquisitionStatus;
   } catch (error) {
     if (error instanceof ApiError) throw error;

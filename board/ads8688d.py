@@ -33,8 +33,10 @@ RECORD = struct.Struct("<QQ48s")
 NET_HEADER = struct.Struct("!IHHI")
 DISCOVERY_REQUEST = struct.Struct("!4sHHQ")
 DISCOVERY_RESPONSE = struct.Struct("!4sHHQ16sHBB")
+DISCOVERY_RESPONSE_V2 = struct.Struct("!4sHHQ16sHBBH")
 
 PROTOCOL_VERSION = 1
+DISCOVERY_VERSION = 2
 MAX_NET_PAYLOAD = 64 * 1024
 MAX_CLIENT_OUTPUT = 2 * 1024 * 1024
 MAX_BACKLOG_PAGE = 2000
@@ -50,6 +52,7 @@ MSG_ARCHIVE_INFO = 8
 MSG_READ_BACKLOG = 9
 MSG_READ_BACKLOG_V2 = 10
 MSG_STREAM_START_V2 = 11
+MSG_SET_RATE_GROUP = 12
 MSG_LIVE_DATA = 0x0100
 MSG_ARCHIVE_DATA = 0x0101
 MSG_ARCHIVE_DATA_V2 = 0x0102
@@ -63,6 +66,98 @@ CONTROL_SET_RATE = 3
 CONTROL_ACK = 0x8000
 MIN_SCAN_RATE = 10
 MAX_SCAN_RATE = 2000
+
+
+def channel_capabilities(scan_rate: int) -> dict[str, object]:
+    channels = [
+        {
+            "id": f"CH{channel}",
+            "label": f"ADS8688 CH{channel}",
+            "adc": "ADS8688",
+            "adcChannel": f"AIN{channel}",
+            "sampleRateHz": scan_rate,
+            "inputUnit": "V",
+            "rateGroupId": "ads8688.scan",
+            "streamAvailable": True,
+        }
+        for channel in range(8)
+    ]
+    channels += [
+        {
+            "id": "ADS1263-AIN0_AIN1",
+            "label": "ADS1263 AIN0–AIN1",
+            "adc": "ADS1263",
+            "adcChannel": "AIN0-AIN1",
+            "sampleRateHz": 400,
+            "inputUnit": "code",
+            "rateGroupId": "ads1263.adc1",
+            "streamAvailable": False,
+        },
+        {
+            "id": "ADS1263-AIN6_AIN7",
+            "label": "ADS1263 AIN6–AIN7",
+            "adc": "ADS1263",
+            "adcChannel": "AIN6-AIN7",
+            "sampleRateHz": 10,
+            "inputUnit": "code",
+            "rateGroupId": "ads1263.adc2",
+            "streamAvailable": False,
+        },
+    ]
+    return {
+        "schemaVersion": 1,
+        "channelCount": len(channels),
+        "channels": channels,
+        "sampleRateGroups": [
+            {
+                "id": "ads8688.scan",
+                "label": "ADS8688 8채널 공통",
+                "channelIds": [f"CH{channel}" for channel in range(8)],
+                "currentHz": scan_rate,
+                "writable": True,
+                "minHz": MIN_SCAN_RATE,
+                "maxHz": MAX_SCAN_RATE,
+                "stepHz": 1,
+            },
+            {
+                "id": "ads1263.adc1",
+                "label": "ADS1263 ADC1",
+                "channelIds": ["ADS1263-AIN0_AIN1"],
+                "currentHz": 400,
+                "writable": False,
+            },
+            {
+                "id": "ads1263.adc2",
+                "label": "ADS1263 ADC2",
+                "channelIds": ["ADS1263-AIN6_AIN7"],
+                "currentHz": 10,
+                "writable": False,
+            },
+        ],
+    }
+
+
+def discovery_capabilities(scan_rate: int) -> dict[str, object]:
+    capabilities = channel_capabilities(scan_rate)
+    return {
+        "schemaVersion": capabilities["schemaVersion"],
+        "channelCount": capabilities["channelCount"],
+        "channels": [
+            [channel[key] for key in (
+                "id", "label", "adc", "adcChannel", "sampleRateHz",
+                "inputUnit", "rateGroupId", "streamAvailable",
+            )]
+            for channel in capabilities["channels"]
+        ],
+        "sampleRateGroups": [
+            [
+                group["id"], group["label"], group["channelIds"],
+                group["currentHz"], group["writable"],
+                group.get("minHz"), group.get("maxHz"), group.get("stepHz"),
+            ]
+            for group in capabilities["sampleRateGroups"]
+        ],
+    }
 
 
 def valid_frame(data: bytes) -> bool:
@@ -429,6 +524,7 @@ class Server:
             "hostname": socket.gethostname(),
             "acquiring": self.acquiring,
             "scan_rate_hz": self.scan_rate,
+            "channel_capabilities": channel_capabilities(self.scan_rate),
             "frames_total": self.frames_total,
             "invalid_total": self.invalid_total,
             "sequence_gaps_total": self.gaps_total,
@@ -460,11 +556,12 @@ class Server:
             self._response(stream, message_type, request_id, {
                 "protocol_version": PROTOCOL_VERSION,
                 "uuid": str(self.identity),
-                "model": "AM6442-SK+ADS8688",
+                "model": "AM6442-SK+ADS8688+ADS1263",
                 "capabilities": [
                     "acquisition_control", "sample_rate", "live_stream",
                     "local_ring", "backlog_replay", "timestamped_stream",
                 ],
+                "channel_capabilities": channel_capabilities(self.scan_rate),
             })
         elif message_type == MSG_STATUS:
             self._response(stream, message_type, request_id, self._status())
@@ -487,6 +584,21 @@ class Server:
                 return
             rate = struct.unpack("!I", payload)[0]
             if not MIN_SCAN_RATE <= rate <= MAX_SCAN_RATE:
+                self._error(stream, request_id, f"rate must be {MIN_SCAN_RATE}..{MAX_SCAN_RATE}")
+                return
+            self._send_control(stream, message_type, request_id, CONTROL_SET_RATE, rate)
+        elif message_type == MSG_SET_RATE_GROUP:
+            try:
+                request = json.loads(payload)
+                group_id = request["groupId"]
+                rate = request["rateHz"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                self._error(stream, request_id, "SET_RATE_GROUP payload is invalid")
+                return
+            if group_id != "ads8688.scan":
+                self._error(stream, request_id, "sample-rate group is not writable")
+                return
+            if type(rate) is not int or not MIN_SCAN_RATE <= rate <= MAX_SCAN_RATE:
                 self._error(stream, request_id, f"rate must be {MIN_SCAN_RATE}..{MAX_SCAN_RATE}")
                 return
             self._send_control(stream, message_type, request_id, CONTROL_SET_RATE, rate)
@@ -589,11 +701,12 @@ class Server:
                 self.acquiring = True
             elif message_type == MSG_ACQ_STOP:
                 self.acquiring = False
-            elif message_type == MSG_SET_RATE:
+            elif message_type in (MSG_SET_RATE, MSG_SET_RATE_GROUP):
                 self.scan_rate = value
             self._response(stream, message_type, request_id, {
                 "acquiring": self.acquiring,
                 "scan_rate_hz": value,
+                "channel_capabilities": channel_capabilities(self.scan_rate),
             })
             return
         if not valid_frame(packet):
@@ -630,14 +743,21 @@ class Server:
         if len(packet) != DISCOVERY_REQUEST.size:
             return
         magic, version, _reserved, nonce = DISCOVERY_REQUEST.unpack(packet)
-        if magic != b"A8DQ" or version != PROTOCOL_VERSION:
+        if magic != b"A8DQ" or version not in (1, DISCOVERY_VERSION):
             return
         hostname = socket.gethostname().encode("utf-8")[:63]
-        model = b"AM6442-SK+ADS8688"
-        response = DISCOVERY_RESPONSE.pack(
-            b"A8DR", PROTOCOL_VERSION, 0, nonce, self.identity.bytes,
-            self.args.port, len(hostname), len(model),
-        ) + hostname + model
+        model = b"AM6442-SK+ADS8688+ADS1263"
+        if version == DISCOVERY_VERSION:
+            capabilities = json_bytes(discovery_capabilities(self.scan_rate))
+            response = DISCOVERY_RESPONSE_V2.pack(
+                b"A8DR", DISCOVERY_VERSION, 0, nonce, self.identity.bytes,
+                self.args.port, len(hostname), len(model), len(capabilities),
+            ) + hostname + model + capabilities
+        else:
+            response = DISCOVERY_RESPONSE.pack(
+                b"A8DR", 1, 0, nonce, self.identity.bytes,
+                self.args.port, len(hostname), len(model),
+            ) + hostname + model
         self.udp.sendto(response, address)
 
     def serve(self) -> None:
