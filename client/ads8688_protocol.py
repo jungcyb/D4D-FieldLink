@@ -8,6 +8,7 @@ import socket
 import struct
 import time
 import uuid
+import zlib
 
 
 VERSION = 1
@@ -29,13 +30,53 @@ READ_BACKLOG = 9
 READ_BACKLOG_V2 = 10
 STREAM_START_V2 = 11
 SET_RATE_GROUP = 12
+ADS1263_STREAM_START = 0x000D
+ADS1263_STREAM_STOP = 0x000E
+ADS1263_READ_BACKLOG = 0x000F
+ADS1263_ARCHIVE_INFO = 0x0010
 LIVE_DATA = 0x0100
 ARCHIVE_DATA = 0x0101
 ARCHIVE_DATA_V2 = 0x0102
 LIVE_DATA_V2 = 0x0103
 ANOMALY_EVENT = 0x0104
+ADS1263_LIVE_DATA = 0x0110
+ADS1263_ARCHIVE_DATA = 0x0111
 RESPONSE = 0x8000
 ERROR = 0xFFFF
+
+# ADS1263 4-channel differential scan frame (firmware/common/ads1263_scan_stream.h).
+ADS1263_SCAN_FRAME = struct.Struct("<IHBBIQI4B4iI")
+ADS1263_SCAN_MAGIC = 0x53363241
+ADS1263_VREF = 2.5
+ADS1263_PAIRS = ("AIN0-AIN1", "AIN2-AIN3", "AIN4-AIN5", "AIN6-AIN7")
+
+
+def decode_ads1263_data(payload: bytes) -> dict:
+    """ADS1263_LIVE_DATA / ADS1263_ARCHIVE_DATA payload -> record with volts.
+
+    Raises ValueError on a malformed payload or a frame CRC mismatch."""
+    if len(payload) != 16 + ADS1263_SCAN_FRAME.size:
+        raise ValueError("invalid ADS1263 data payload")
+    record_id, received_ns = struct.unpack_from("!QQ", payload)
+    frame = payload[16:]
+    fields = ADS1263_SCAN_FRAME.unpack(frame)
+    if (fields[0] != ADS1263_SCAN_MAGIC or fields[1] != 1 or fields[2] != 4
+            or fields[-1] != zlib.crc32(frame[:-4])):
+        raise ValueError("invalid ADS1263 scan frame")
+    timeout_mask = fields[3]
+    codes = fields[11:15]
+    return {
+        "record_id": record_id,
+        "received_unix_ns": received_ns,
+        "sequence": fields[4],
+        "timestamp_us": fields[5],
+        "scan_rate_hz": fields[6],
+        "timeout_mask": timeout_mask,
+        "status": list(fields[7:11]),
+        "codes": list(codes),
+        "volts": [None if timeout_mask >> index & 1 else code * ADS1263_VREF / 2**31
+                  for index, code in enumerate(codes)],
+    }
 
 
 def message(message_type: int, request_id: int, payload: bytes = b"") -> bytes:

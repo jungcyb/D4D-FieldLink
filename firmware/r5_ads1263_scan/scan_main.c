@@ -1,4 +1,4 @@
-/* R5FSS1-0 entry for the shared ADS1263 scan task.
+/* R5FSS1-0 entry for the ADS1263 scan application (scan_app.c).
  *
  * Same as the CCS project's main.c, plus the Linux remoteproc shutdown
  * handshake: kernel 6.12 k3_r5 waits for SHUTDOWN_ACK + WFI before it lets
@@ -36,12 +36,12 @@ static volatile uint32_t gShutdownRemoteCoreId;
 
 extern ClockP_Config gClockConfig;
 
-void ads1263_scan_task(void *args);
+void scan_app_main(void *args);
 
 
 static void scan_task(void *args)
 {
-    ads1263_scan_task(args);
+    scan_app_main(args);
     vTaskDelete(NULL);
 }
 

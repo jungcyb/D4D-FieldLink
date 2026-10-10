@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""ADS8688 acquisition, ring storage, discovery, and TCP service."""
+"""ADS8688 + ADS1263 acquisition, ring storage, discovery, and TCP service.
+
+ADS8688 frames arrive from the M4F through the R5FSS0-0 relay; ADS1263 scan
+frames arrive directly from R5FSS1-0. Each ADC has its own segment ring and
+record_id space; see docs/PROTOCOL.md."""
 
 from __future__ import annotations
 
@@ -67,8 +71,28 @@ CONTROL_ACK = 0x8000
 MIN_SCAN_RATE = 10
 MAX_SCAN_RATE = 2000
 
+# ADS1263 4-channel differential scan (firmware/common/ads1263_scan_stream.h).
+SCAN_FRAME = struct.Struct("<IHBBIQI4B4iI")
+SCAN_MAGIC = 0x53363241
+SCAN_CONTROL_MAGIC = 0x364C5443
+SCAN_CONTROL_GET_STATUS = 1
+SCAN_CONTROL_SET_RATE = 6
+SCAN_HELLO_REPLY = b"A26OK"
+ADS1263_MIN_RATE = 1
+ADS1263_MAX_RATE = 300
+ADS1263_DEFAULT_RATE = 100
+ADS1263_VREF = 2.5
+ADS1263_PAIRS = ("AIN0_AIN1", "AIN2_AIN3", "AIN4_AIN5", "AIN6_AIN7")
 
-def channel_capabilities(scan_rate: int) -> dict[str, object]:
+MSG_ADS1263_STREAM_START = 0x000D
+MSG_ADS1263_STREAM_STOP = 0x000E
+MSG_ADS1263_READ_BACKLOG = 0x000F
+MSG_ADS1263_ARCHIVE_INFO = 0x0010
+MSG_ADS1263_LIVE_DATA = 0x0110
+MSG_ADS1263_ARCHIVE_DATA = 0x0111
+
+
+def channel_capabilities(scan_rate: int, ads1263_rate: int = ADS1263_DEFAULT_RATE) -> dict[str, object]:
     channels = [
         {
             "id": f"CH{channel}",
@@ -82,27 +106,20 @@ def channel_capabilities(scan_rate: int) -> dict[str, object]:
         }
         for channel in range(8)
     ]
+    # ADS1263 is acquired and served by this daemon (ADS1263 stream messages),
+    # but the dashboard collector does not forward it yet.
     channels += [
         {
-            "id": "ADS1263-AIN0_AIN1",
-            "label": "ADS1263 AIN0–AIN1",
+            "id": f"ADS1263-{pair}",
+            "label": f"ADS1263 {pair.replace('_', '–')}",
             "adc": "ADS1263",
-            "adcChannel": "AIN0-AIN1",
-            "sampleRateHz": 400,
-            "inputUnit": "code",
-            "rateGroupId": "ads1263.adc1",
+            "adcChannel": pair.replace("_", "-"),
+            "sampleRateHz": ads1263_rate,
+            "inputUnit": "V",
+            "rateGroupId": "ads1263.scan",
             "streamAvailable": False,
-        },
-        {
-            "id": "ADS1263-AIN6_AIN7",
-            "label": "ADS1263 AIN6–AIN7",
-            "adc": "ADS1263",
-            "adcChannel": "AIN6-AIN7",
-            "sampleRateHz": 10,
-            "inputUnit": "code",
-            "rateGroupId": "ads1263.adc2",
-            "streamAvailable": False,
-        },
+        }
+        for pair in ADS1263_PAIRS
     ]
     return {
         "schemaVersion": 1,
@@ -120,25 +137,21 @@ def channel_capabilities(scan_rate: int) -> dict[str, object]:
                 "stepHz": 1,
             },
             {
-                "id": "ads1263.adc1",
-                "label": "ADS1263 ADC1",
-                "channelIds": ["ADS1263-AIN0_AIN1"],
-                "currentHz": 400,
-                "writable": False,
-            },
-            {
-                "id": "ads1263.adc2",
-                "label": "ADS1263 ADC2",
-                "channelIds": ["ADS1263-AIN6_AIN7"],
-                "currentHz": 10,
-                "writable": False,
+                "id": "ads1263.scan",
+                "label": "ADS1263 차동 4채널 순차 스캔",
+                "channelIds": [f"ADS1263-{pair}" for pair in ADS1263_PAIRS],
+                "currentHz": ads1263_rate,
+                "writable": True,
+                "minHz": ADS1263_MIN_RATE,
+                "maxHz": ADS1263_MAX_RATE,
+                "stepHz": 1,
             },
         ],
     }
 
 
-def discovery_capabilities(scan_rate: int) -> dict[str, object]:
-    capabilities = channel_capabilities(scan_rate)
+def discovery_capabilities(scan_rate: int, ads1263_rate: int = ADS1263_DEFAULT_RATE) -> dict[str, object]:
+    capabilities = channel_capabilities(scan_rate, ads1263_rate)
     return {
         "schemaVersion": capabilities["schemaVersion"],
         "channelCount": capabilities["channelCount"],
@@ -174,20 +187,60 @@ def valid_frame(data: bytes) -> bool:
     )
 
 
-def valid_control(data: bytes) -> bool:
+def valid_control(data: bytes, magic: int = CONTROL_MAGIC) -> bool:
     if len(data) != CONTROL.size:
         return False
     fields = CONTROL.unpack(data)
     return (
-        fields[0] == CONTROL_MAGIC
+        fields[0] == magic
         and fields[1] == 1
         and fields[-1] == zlib.crc32(data[:-4])
     )
 
 
-def make_control(command: int, request_id: int, value: int = 0) -> bytes:
-    body = CONTROL.pack(CONTROL_MAGIC, 1, command, request_id, value, 0, 0)
+def make_control(command: int, request_id: int, value: int = 0,
+                 magic: int = CONTROL_MAGIC) -> bytes:
+    body = CONTROL.pack(magic, 1, command, request_id, value, 0, 0)
     return body[:-4] + struct.pack("<I", zlib.crc32(body[:-4]))
+
+
+def valid_scan_frame(data: bytes) -> bool:
+    if len(data) != SCAN_FRAME.size:
+        return False
+    fields = SCAN_FRAME.unpack(data)
+    return (
+        fields[0] == SCAN_MAGIC
+        and fields[1] == 1
+        and fields[2] == len(ADS1263_PAIRS)
+        and fields[-1] == zlib.crc32(data[:-4])
+    )
+
+
+def decode_scan_frame(data: bytes) -> dict[str, object]:
+    """ADS1263 scan frame -> per-channel volts; timed-out channels are None."""
+    fields = SCAN_FRAME.unpack(data)
+    timeout_mask = fields[3]
+    statuses, codes = fields[7:11], fields[11:15]
+    return {
+        "sequence": fields[4],
+        "timestamp_us": fields[5],
+        "scan_rate_hz": fields[6],
+        "timeout_mask": timeout_mask,
+        "status": list(statuses),
+        "codes": list(codes),
+        "volts": [None if timeout_mask >> index & 1 else code * ADS1263_VREF / 2**31
+                  for index, code in enumerate(codes)],
+    }
+
+
+def ads8688_meta(frame: bytes) -> tuple[int, int]:
+    fields = FRAME.unpack(frame)
+    return fields[3], fields[5]
+
+
+def ads1263_meta(frame: bytes) -> tuple[int, int]:
+    fields = SCAN_FRAME.unpack(frame)
+    return fields[4], fields[6]
 
 
 def make_message(message_type: int, request_id: int, payload: bytes = b"") -> bytes:
@@ -198,19 +251,19 @@ def json_bytes(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def find_rpmsg_device() -> Path:
+def find_rpmsg_device(core: str = "78000000.r5f") -> Path:
     remoteproc_name = None
     for remoteproc in Path("/sys/class/remoteproc").glob("remoteproc*"):
-        if (remoteproc / "name").read_text().strip() == "78000000.r5f":
+        if (remoteproc / "name").read_text().strip() == core:
             remoteproc_name = remoteproc.name
             break
     if remoteproc_name is None:
-        raise FileNotFoundError("MAIN R5FSS0-0 remoteproc not found")
+        raise FileNotFoundError(f"remoteproc {core} not found")
 
     for entry in sorted(Path("/sys/class/rpmsg").glob("rpmsg[0-9]*")):
         if f"/{remoteproc_name}/" in str(entry.resolve()):
             return Path("/dev") / entry.name
-    raise FileNotFoundError("R5FSS0-0 rpmsg_chrdev endpoint not found")
+    raise FileNotFoundError(f"{core} rpmsg_chrdev endpoint not found")
 
 
 def load_identity(path: Path) -> uuid.UUID:
@@ -238,7 +291,7 @@ def system_metrics() -> dict[str, object]:
     for remoteproc in Path("/sys/class/remoteproc").glob("remoteproc*"):
         try:
             name = (remoteproc / "name").read_text().strip()
-            if name in ("5000000.m4fss", "78000000.r5f"):
+            if name in ("5000000.m4fss", "78000000.r5f", "78400000.r5f"):
                 remoteprocs[name] = {
                     "state": (remoteproc / "state").read_text().strip(),
                     "firmware": (remoteproc / "firmware").read_text().strip(),
@@ -271,6 +324,8 @@ def system_metrics() -> dict[str, object]:
 
 
 class SegmentRing:
+    """FIFO of fixed 64-byte records (record_id, received_ns, 48-byte frame)."""
+
     def __init__(
         self,
         directory: Path,
@@ -278,7 +333,13 @@ class SegmentRing:
         segment_bytes: int,
         max_bytes: int,
         reserve_bytes: int,
+        magic: bytes = b"ADS8SEG\0",
+        suffix: str = ".ads8",
+        frame_meta=ads8688_meta,
     ) -> None:
+        self.magic = magic
+        self.suffix = suffix
+        self.frame_meta = frame_meta
         self.directory = directory
         self.identity = identity
         self.segment_bytes = max(segment_bytes, SEGMENT_HEADER.size + RECORD.size)
@@ -303,23 +364,22 @@ class SegmentRing:
             ) * RECORD.size
             with path.open("r+b") as stream:
                 stream.truncate(usable)
-            path.rename(path.with_suffix(".ads8"))
+            path.rename(path.with_suffix(self.suffix))
 
     def _paths(self, include_current: bool = True) -> list[Path]:
-        paths = sorted(self.directory.glob("*.ads8"))
+        paths = sorted(self.directory.glob(f"*{self.suffix}"))
         if include_current and self.current_path is not None:
             paths.append(self.current_path)
         return paths
 
-    @staticmethod
-    def _bounds(path: Path) -> tuple[int, int] | None:
+    def _bounds(self, path: Path) -> tuple[int, int] | None:
         size = path.stat().st_size
         if size < SEGMENT_HEADER.size + RECORD.size:
             return None
         with path.open("rb") as stream:
             header = stream.read(SEGMENT_HEADER.size)
             fields = SEGMENT_HEADER.unpack(header)
-            if fields[0] != b"ADS8SEG\0" or fields[1] != 1:
+            if fields[0] != self.magic or fields[1] != 1:
                 return None
             first = fields[5]
             stream.seek(-RECORD.size, os.SEEK_END)
@@ -343,7 +403,7 @@ class SegmentRing:
         self.current_first_record = self.next_record_id
         self.current.write(
             SEGMENT_HEADER.pack(
-                b"ADS8SEG\0",
+                self.magic,
                 1,
                 SEGMENT_HEADER.size,
                 self.identity.bytes,
@@ -356,9 +416,7 @@ class SegmentRing:
         self.last_sync = time.monotonic()
 
     def append(self, frame: bytes) -> tuple[int, int]:
-        fields = FRAME.unpack(frame)
-        sequence = fields[3]
-        scan_rate = fields[5]
+        sequence, scan_rate = self.frame_meta(frame)
         if self.current is None:
             self._open(sequence, scan_rate)
         elif self.current.tell() + RECORD.size > self.segment_bytes:
@@ -382,14 +440,14 @@ class SegmentRing:
         self.current.flush()
         os.fsync(self.current.fileno())
         self.current.close()
-        completed = self.current_path.with_suffix(".ads8")
+        completed = self.current_path.with_suffix(self.suffix)
         os.replace(self.current_path, completed)
         self.current = None
         self.current_path = None
         self._prune()
 
     def _prune(self) -> None:
-        completed = sorted(self.directory.glob("*.ads8"))
+        completed = sorted(self.directory.glob(f"*{self.suffix}"))
         used = sum(path.stat().st_size for path in completed)
         usage = shutil.disk_usage(self.directory)
         reserve = max(self.reserve_bytes, usage.total // 10)
@@ -454,6 +512,7 @@ class Client:
     incoming: bytearray = field(default_factory=bytearray)
     outgoing: bytearray = field(default_factory=bytearray)
     streaming: int = 0
+    streaming_ads1263: bool = False
 
 
 class Server:
@@ -467,6 +526,31 @@ class Server:
             args.max_storage_bytes,
             args.reserve_bytes,
         )
+        self.ring1263 = SegmentRing(
+            args.ads1263_data_dir,
+            self.identity,
+            args.segment_bytes,
+            args.max_storage_bytes,
+            args.reserve_bytes,
+            magic=b"A26SSEG\0",
+            suffix=".a26s",
+            frame_meta=ads1263_meta,
+        )
+        self.ads1263: int | None = None
+        self.ads1263_device: Path | None = None
+        self.ads1263_retry = 0.0
+        self.ads1263_rate = ADS1263_DEFAULT_RATE
+        self.ads1263_online = False
+        self.ads1263_acquiring = False
+        self.ads1263_pending: dict[int, tuple[socket.socket | None, int, int, float]] = {}
+        self.ads1263_frames = 0
+        self.ads1263_invalid = 0
+        self.ads1263_gaps = 0
+        self.ads1263_timeout_frames = 0
+        self.ads1263_recoveries = 0
+        self.ads1263_status_poll = 0.0
+        self.ads1263_last_sequence: int | None = None
+        self.ads1263_report_frames = 0
         self.selector = selectors.DefaultSelector()
         self.clients: dict[socket.socket, Client] = {}
         self.pending: dict[int, tuple[socket.socket, int, int, float]] = {}
@@ -524,12 +608,25 @@ class Server:
             "hostname": socket.gethostname(),
             "acquiring": self.acquiring,
             "scan_rate_hz": self.scan_rate,
-            "channel_capabilities": channel_capabilities(self.scan_rate),
+            "channel_capabilities": channel_capabilities(self.scan_rate, self.ads1263_rate),
             "frames_total": self.frames_total,
             "invalid_total": self.invalid_total,
             "sequence_gaps_total": self.gaps_total,
             "uptime_seconds": round(time.monotonic() - self.started, 3),
             "archive": self.ring.info(),
+            "ads1263": {
+                "connected": self.ads1263 is not None,
+                "device": str(self.ads1263_device) if self.ads1263_device else None,
+                "online": self.ads1263_online,
+                "acquiring": self.ads1263_acquiring,
+                "scan_rate_hz": self.ads1263_rate,
+                "frames_total": self.ads1263_frames,
+                "invalid_total": self.ads1263_invalid,
+                "sequence_gaps_total": self.ads1263_gaps,
+                "timeout_frames_total": self.ads1263_timeout_frames,
+                "config_recoveries": self.ads1263_recoveries,
+                "archive": self.ring1263.info(),
+            },
             "system": system_metrics(),
         }
 
@@ -560,8 +657,9 @@ class Server:
                 "capabilities": [
                     "acquisition_control", "sample_rate", "live_stream",
                     "local_ring", "backlog_replay", "timestamped_stream",
+                    "ads1263_stream",
                 ],
-                "channel_capabilities": channel_capabilities(self.scan_rate),
+                "channel_capabilities": channel_capabilities(self.scan_rate, self.ads1263_rate),
             })
         elif message_type == MSG_STATUS:
             self._response(stream, message_type, request_id, self._status())
@@ -574,6 +672,20 @@ class Server:
         elif message_type == MSG_STREAM_STOP:
             client.streaming = 0
             self._response(stream, message_type, request_id, {"streaming": False})
+        elif message_type == MSG_ADS1263_STREAM_START:
+            client.streaming_ads1263 = True
+            self._response(stream, message_type, request_id, {
+                "streaming": True, "timestamps": "unix_ns",
+                "connected": self.ads1263 is not None, "scan_rate_hz": self.ads1263_rate,
+            })
+        elif message_type == MSG_ADS1263_STREAM_STOP:
+            client.streaming_ads1263 = False
+            self._response(stream, message_type, request_id, {"streaming": False})
+        elif message_type == MSG_ADS1263_ARCHIVE_INFO:
+            self._response(stream, message_type, request_id, self.ring1263.info())
+        elif message_type == MSG_ADS1263_READ_BACKLOG:
+            self._backlog(stream, message_type, request_id, payload, self.ring1263,
+                          MSG_ADS1263_ARCHIVE_DATA, True)
         elif message_type == MSG_ACQ_START:
             self._send_control(stream, message_type, request_id, CONTROL_START)
         elif message_type == MSG_ACQ_STOP:
@@ -595,6 +707,12 @@ class Server:
             except (json.JSONDecodeError, KeyError, TypeError):
                 self._error(stream, request_id, "SET_RATE_GROUP payload is invalid")
                 return
+            if group_id == "ads1263.scan":
+                if type(rate) is not int or not ADS1263_MIN_RATE <= rate <= ADS1263_MAX_RATE:
+                    self._error(stream, request_id, f"rate must be {ADS1263_MIN_RATE}..{ADS1263_MAX_RATE}")
+                    return
+                self._send_scan_control(stream, message_type, request_id, SCAN_CONTROL_SET_RATE, rate)
+                return
             if group_id != "ads8688.scan":
                 self._error(stream, request_id, "sample-rate group is not writable")
                 return
@@ -605,36 +723,148 @@ class Server:
         elif message_type == MSG_ARCHIVE_INFO:
             self._response(stream, message_type, request_id, self.ring.info())
         elif message_type in (MSG_READ_BACKLOG, MSG_READ_BACKLOG_V2):
-            if len(payload) != 12:
-                self._error(stream, request_id, "READ_BACKLOG payload must be uint64,uint32")
-                return
-            after_record, limit = struct.unpack("!QI", payload)
-            before = self.ring.info()
-            earliest = before["earliest_record_id"]
-            returned = 0
-            last_record = after_record
-            for record_id, received_ns, frame in self.ring.read_after(after_record, limit):
-                self._queue(
-                    stream,
-                    make_message(
-                        MSG_ARCHIVE_DATA_V2 if message_type == MSG_READ_BACKLOG_V2 else MSG_ARCHIVE_DATA,
-                        request_id,
-                        (struct.pack("!QQ", record_id, received_ns) if message_type == MSG_READ_BACKLOG_V2 else struct.pack("!Q", record_id)) + frame,
-                    ),
-                )
-                returned += 1
-                last_record = record_id
-            info = self.ring.info()
-            self._response(stream, message_type, request_id, {
-                "returned": returned,
-                "last_record_id": last_record,
-                "latest_record_id": info["latest_record_id"],
-                "more": info["latest_record_id"] is not None and last_record < info["latest_record_id"],
-                "earliest_record_id": earliest,
-                "truncated": earliest is not None and after_record + 1 < earliest,
-            })
+            timestamped = message_type == MSG_READ_BACKLOG_V2
+            self._backlog(stream, message_type, request_id, payload, self.ring,
+                          MSG_ARCHIVE_DATA_V2 if timestamped else MSG_ARCHIVE_DATA, timestamped)
         else:
             self._error(stream, request_id, f"unknown message type {message_type}")
+
+    def _backlog(self, stream: socket.socket, message_type: int, request_id: int,
+                 payload: bytes, ring: SegmentRing, data_type: int, timestamped: bool) -> None:
+        if len(payload) != 12:
+            self._error(stream, request_id, "READ_BACKLOG payload must be uint64,uint32")
+            return
+        after_record, limit = struct.unpack("!QI", payload)
+        earliest = ring.info()["earliest_record_id"]
+        returned = 0
+        last_record = after_record
+        for record_id, received_ns, frame in ring.read_after(after_record, limit):
+            prefix = struct.pack("!QQ", record_id, received_ns) if timestamped else struct.pack("!Q", record_id)
+            self._queue(stream, make_message(data_type, request_id, prefix + frame))
+            returned += 1
+            last_record = record_id
+        info = ring.info()
+        self._response(stream, message_type, request_id, {
+            "returned": returned,
+            "last_record_id": last_record,
+            "latest_record_id": info["latest_record_id"],
+            "more": info["latest_record_id"] is not None and last_record < info["latest_record_id"],
+            "earliest_record_id": earliest,
+            "truncated": earliest is not None and after_record + 1 < earliest,
+        })
+
+    def _send_scan_control(self, stream: socket.socket | None, message_type: int,
+                           request_id: int, command: int, value: int = 0) -> None:
+        if self.ads1263 is None:
+            if stream is not None:
+                self._error(stream, request_id, "ADS1263 core (R5FSS1-0) is not connected")
+            return
+        internal_id = self.control_id
+        self.control_id = (self.control_id + 1) & 0xFFFFFFFF or 1
+        try:
+            os.write(self.ads1263, make_control(command, internal_id, value, SCAN_CONTROL_MAGIC))
+        except OSError as error:
+            if stream is not None:
+                self._error(stream, request_id, f"ADS1263 RPMsg control failed: {error}")
+            self._close_ads1263(f"write failed: {error}")
+            return
+        self.ads1263_pending[internal_id] = (stream, message_type, request_id, time.monotonic())
+
+    def _open_ads1263(self) -> None:
+        self.ads1263_retry = time.monotonic() + 5.0
+        try:
+            device = self.args.ads1263_device or find_rpmsg_device("78400000.r5f")
+            descriptor = os.open(device, os.O_RDWR | os.O_NONBLOCK)
+        except OSError:
+            return
+        try:
+            os.write(descriptor, b"SUBSCRIBE")
+        except OSError:
+            os.close(descriptor)
+            return
+        self.ads1263, self.ads1263_device = descriptor, device
+        self.ads1263_last_sequence = None
+        self.selector.register(descriptor, selectors.EVENT_READ, "ads1263")
+        print(f"ads1263 connected device={device}", flush=True)
+        self._send_scan_control(None, 0, 0, SCAN_CONTROL_GET_STATUS)
+
+    def _close_ads1263(self, reason: str) -> None:
+        if self.ads1263 is None:
+            return
+        try:
+            self.selector.unregister(self.ads1263)
+        except Exception:
+            pass
+        os.close(self.ads1263)
+        self.ads1263 = None
+        self.ads1263_online = self.ads1263_acquiring = False
+        for stream, _type, request_id, _started in self.ads1263_pending.values():
+            if stream is not None and stream in self.clients:
+                self._error(stream, request_id, "ADS1263 core disconnected")
+        self.ads1263_pending.clear()
+        self.ads1263_retry = time.monotonic() + 5.0
+        print(f"ads1263 disconnected ({reason})", flush=True)
+
+    def _ads1263_read(self) -> None:
+        try:
+            packet = os.read(self.ads1263, 496)
+        except BlockingIOError:
+            return
+        except OSError as error:
+            self._close_ads1263(str(error))
+            return
+        if not packet:
+            self._close_ads1263("endpoint closed")
+            return
+        if packet == SCAN_HELLO_REPLY:
+            return
+        if valid_control(packet, SCAN_CONTROL_MAGIC):
+            _magic, _version, command, internal_id, value, status, _crc = CONTROL.unpack(packet)
+            pending = self.ads1263_pending.pop(internal_id, None)
+            if pending is None or command & CONTROL_ACK == 0:
+                return
+            if command == CONTROL_ACK | SCAN_CONTROL_GET_STATUS:
+                self.ads1263_online = bool(value >> 31 & 1)
+                self.ads1263_acquiring = bool(value >> 30 & 1)
+                self.ads1263_recoveries = value >> 16 & 0x3FFF
+                self.ads1263_rate = value & 0xFFFF or self.ads1263_rate
+            elif status == 0 and command == CONTROL_ACK | SCAN_CONTROL_SET_RATE:
+                self.ads1263_rate = value
+            stream, message_type, request_id, _started = pending
+            if stream is None or stream not in self.clients:
+                return
+            if status != 0:
+                self._error(stream, request_id, "ADS1263 core rejected control request")
+                return
+            self._response(stream, message_type, request_id, {
+                "group_id": "ads1263.scan",
+                "scan_rate_hz": self.ads1263_rate,
+                "channel_capabilities": channel_capabilities(self.scan_rate, self.ads1263_rate),
+            })
+            return
+        if not valid_scan_frame(packet):
+            self.ads1263_invalid += 1
+            return
+        sequence, rate = ads1263_meta(packet)
+        self.ads1263_rate = rate
+        self.ads1263_online = self.ads1263_acquiring = True
+        if (self.ads1263_last_sequence is not None
+                and sequence != (self.ads1263_last_sequence + 1) & 0xFFFFFFFF):
+            self.ads1263_gaps += (sequence - self.ads1263_last_sequence - 1) & 0xFFFFFFFF
+        self.ads1263_last_sequence = sequence
+        if packet[7]:
+            self.ads1263_timeout_frames += 1
+        try:
+            record_id, received_ns = self.ring1263.append(packet)
+        except OSError as error:
+            print(f"ads1263 storage write failed: {error}", flush=True)
+            return
+        self.ads1263_frames += 1
+        self.ads1263_report_frames += 1
+        message = make_message(MSG_ADS1263_LIVE_DATA, 0, struct.pack("!QQ", record_id, received_ns) + packet)
+        for stream, client in tuple(self.clients.items()):
+            if client.streaming_ads1263:
+                self._queue(stream, message)
 
     def _client_read(self, stream: socket.socket) -> None:
         client = self.clients[stream]
@@ -706,7 +936,7 @@ class Server:
             self._response(stream, message_type, request_id, {
                 "acquiring": self.acquiring,
                 "scan_rate_hz": value,
-                "channel_capabilities": channel_capabilities(self.scan_rate),
+                "channel_capabilities": channel_capabilities(self.scan_rate, self.ads1263_rate),
             })
             return
         if not valid_frame(packet):
@@ -748,7 +978,7 @@ class Server:
         hostname = socket.gethostname().encode("utf-8")[:63]
         model = b"AM6442-SK+ADS8688+ADS1263"
         if version == DISCOVERY_VERSION:
-            capabilities = json_bytes(discovery_capabilities(self.scan_rate))
+            capabilities = json_bytes(discovery_capabilities(self.scan_rate, self.ads1263_rate))
             response = DISCOVERY_RESPONSE_V2.pack(
                 b"A8DR", DISCOVERY_VERSION, 0, nonce, self.identity.bytes,
                 self.args.port, len(hostname), len(model), len(capabilities),
@@ -778,6 +1008,8 @@ class Server:
         self.udp.setblocking(False)
 
         self.selector.register(self.rpmsg, selectors.EVENT_READ, "rpmsg")
+        if not self.args.no_ads1263:
+            self._open_ads1263()
         self.selector.register(self.tcp, selectors.EVENT_READ, "server")
         self.selector.register(self.udp, selectors.EVENT_READ, "udp")
         print(
@@ -791,6 +1023,9 @@ class Server:
                 for key, mask in self.selector.select(timeout=1.0):
                     if key.data == "rpmsg":
                         self._rpmsg_read()
+                    elif key.data == "ads1263":
+                        if self.ads1263 is not None:
+                            self._ads1263_read()
                     elif key.data == "udp":
                         self._udp_read()
                     elif key.data == "server":
@@ -813,14 +1048,29 @@ class Server:
                     if now - started > 2.0:
                         self.pending.pop(internal_id)
                         self._error(stream, request_id, "MCU control timeout")
+                for internal_id, pending in tuple(self.ads1263_pending.items()):
+                    stream, _message_type, request_id, started = pending
+                    if now - started > 2.0:
+                        self.ads1263_pending.pop(internal_id)
+                        if stream is not None and stream in self.clients:
+                            self._error(stream, request_id, "ADS1263 control timeout")
+                if (not self.args.no_ads1263 and self.ads1263 is None
+                        and now >= self.ads1263_retry):
+                    self._open_ads1263()
+                if self.ads1263 is not None and now >= self.ads1263_status_poll:
+                    self.ads1263_status_poll = now + 10.0
+                    self._send_scan_control(None, 0, 0, SCAN_CONTROL_GET_STATUS)
                 if now - self.last_report >= 1.0:
                     print(
                         f"frames={self.report_frames} invalid={self.report_invalid} "
                         f"seq_gaps={self.report_gaps} clients={len(self.clients)} "
-                        f"stored={self.ring.next_record_id - 1}",
+                        f"stored={self.ring.next_record_id - 1} "
+                        f"ads1263_frames={self.ads1263_report_frames} "
+                        f"ads1263_stored={self.ring1263.next_record_id - 1}",
                         flush=True,
                     )
                     self.report_frames = self.report_invalid = self.report_gaps = 0
+                    self.ads1263_report_frames = 0
                     self.last_report = now
         finally:
             for stream in tuple(self.clients):
@@ -829,7 +1079,10 @@ class Server:
             self.tcp.close()
             self.udp.close()
             os.close(self.rpmsg)
+            if self.ads1263 is not None:
+                os.close(self.ads1263)
             self.ring.close()
+            self.ring1263.close()
 
 
 def main() -> None:
@@ -838,6 +1091,10 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--discovery-port", type=int, default=8764)
     parser.add_argument("--data-dir", type=Path, default=Path("/var/lib/ads8688/data"))
+    parser.add_argument("--ads1263-device", type=Path,
+                        help="R5FSS1-0 rpmsg_chrdev (default: found by remoteproc name)")
+    parser.add_argument("--ads1263-data-dir", type=Path, default=Path("/var/lib/ads8688/ads1263"))
+    parser.add_argument("--no-ads1263", action="store_true", help="ADS8688 only")
     parser.add_argument("--identity-file", type=Path, default=Path("/var/lib/ads8688/identity"))
     parser.add_argument("--segment-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--max-storage-bytes", type=int, default=0)

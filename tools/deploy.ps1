@@ -27,6 +27,8 @@ if (-not $BoardIp) { throw 'Set -BoardIp or .meta/client/host.txt or ip in .meta
 if (-not $SkipBuild) {
     & "$root\firmware\build_phase2.ps1"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & "$root\firmware\r5_ads1263_scan\build.ps1"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 $env:SSH_ASKPASS = (Resolve-Path "$root\tools\ssh\askpass.cmd").Path
@@ -37,11 +39,12 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $knownHosts) | Out
 $sshOptions = @('-o', 'BatchMode=no', '-o', "UserKnownHostsFile=$knownHosts")
 $target = "$($config.user)@$BoardIp"
 
-ssh @sshOptions $target 'systemctl stop ads8688-phase2.service 2>/dev/null || true; mkdir -p /opt/ads8688 /lib/firmware/ads8688 /var/lib/ads8688/data'
+ssh @sshOptions $target 'systemctl stop ads8688-phase2.service 2>/dev/null || true; mkdir -p /opt/ads8688 /lib/firmware/ads8688 /lib/firmware/ads1263_scan /var/lib/ads8688/data'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 scp @sshOptions "$root\firmware\m4_ads8688\ti-arm-clang\m4_ads8688.release.out" "${target}:/lib/firmware/ads8688/m4_ads8688_stream.out"
 scp @sshOptions "$root\firmware\r5_ads8688_relay\ti-arm-clang\r5_ads8688_relay.release.out" "${target}:/lib/firmware/ads8688/r5_ads8688_relay.out"
+scp @sshOptions "$root\firmware\r5_ads1263_scan\ti-arm-clang\am64-main-r5f1_0-fw" "${target}:/lib/firmware/ads1263_scan/am64-main-r5f1_0-fw"
 scp @sshOptions "$root\board\activate_phase2.sh" "${target}:/opt/ads8688/activate_phase2.sh"
 scp @sshOptions "$root\board\ads8688d.py" "${target}:/opt/ads8688/ads8688d.py"
 scp @sshOptions "$root\board\ads8688-phase2.service" "${target}:/etc/systemd/system/ads8688-phase2.service"

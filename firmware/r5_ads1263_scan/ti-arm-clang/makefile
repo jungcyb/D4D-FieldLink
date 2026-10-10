@@ -41,7 +41,7 @@ TARGETS := $(BOOTIMAGE_NAME)
 
 FILES_common := \
 	ads1263.c \
-	ads1263_task.c \
+	scan_app.c \
 	scan_main.c \
 	ti_drivers_config.c \
 	ti_drivers_open_close.c \

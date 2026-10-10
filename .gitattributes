@@ -1,0 +1,5 @@
+# Files copied to the AM64x board (Linux) must keep LF, even on Windows
+# checkouts with core.autocrlf=true: a CRLF shebang fails with 203/EXEC.
+board/** text eol=lf
+*.sh text eol=lf
+*.service text eol=lf
