@@ -141,7 +141,10 @@ export class BatchWriter {
   async refreshSensors() { if (Date.now() - this.sensorRefresh < 5000) return; const sensors = await dashboard("/sensors"); this.sensors = sensors.filter(sensor => sensor.daqUuid === this.uuid && channelIndex(sensor.channel) !== null); this.sensorRefresh = Date.now(); }
   add(frame) {
     const recoveryBatch = Boolean(this.recovery?.raw && frame.timestamp >= this.recovery.from && frame.timestamp <= this.recovery.to);
-    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || this.frames[0].scanRate !== frame.scanRate || frame.recordId !== this.frames.at(-1).recordId + BigInt(1) || this.frames.length >= Math.min(frame.scanRate,4096))) this.closeBatch();
+    // The dashboard places a batch's last sample at first + (n-1)/sps and rejects recovery batches ending after plan.to; when the real rate runs
+    // faster than the advertised SPS (ESP/BLE sensors do) that projection overshoots, so start a new batch before it would.
+    const overshootsRecovery = recoveryBatch && this.recoveryBatch && Date.parse(this.frames[0]?.timestamp) + this.frames.length * 1000 / frame.scanRate > Date.parse(this.recovery.to) + 1;
+    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || overshootsRecovery || this.frames[0].scanRate !== frame.scanRate || frame.recordId !== this.frames.at(-1).recordId + BigInt(1) || this.frames.length >= Math.min(frame.scanRate,4096))) this.closeBatch();
     if (frame.archived && !recoveryBatch) return;
     if (!this.frames.length) this.recoveryBatch = recoveryBatch;
     this.frames.push(frame); if (this.frames.length >= Math.min(frame.scanRate,4096)) this.closeBatch();
@@ -175,6 +178,26 @@ class OrderedFrames {
   accept(frame) { if (this.expected === null) this.expected = frame.recordId; if (frame.recordId < this.expected) return; this.pending.set(frame.recordId.toString(), frame); while (this.pending.has(this.expected.toString())) { const next = this.pending.get(this.expected.toString()); this.pending.delete(this.expected.toString()); this.writer.add(next); this.expected += BigInt(1); } }
 }
 
+const ANOMALY_SEVERITY = { normal: "normal", warning: "warning", alarm: "critical" };
+const ANOMALY_TITLE = { normal: "진동 RMS 정상 복귀", warning: "진동 RMS 증가 (경고)", alarm: "진동 RMS 급증 (위험)" };
+const ANOMALY_MODEL = "edge-rms-sta-lta", SEVERITY_STATE = { normal: "normal", warning: "warning", critical: "alarm" };
+// Turn the board's STATUS.anomaly (short/long-term RMS) into dashboard diagnoses, one per channel state change.
+// `reported` remembers the last state per channel across calls. It starts from the sensor's latest dashboard diagnosis from this
+// detector, so a return to normal that happened while the collector was away still clears the warning; with none, normal is not reported.
+export function anomalyDiagnoses(anomaly, reported, sensors) {
+  const sensorFor = new Map(sensors.map(sensor => [sensor.channel.toUpperCase(), sensor])), diagnoses = [];
+  for (const channel of anomaly?.channels || []) {
+    if (!ANOMALY_SEVERITY[channel.state]) continue;
+    const sensor = sensorFor.get(channel.id.toUpperCase());
+    if (!reported.has(channel.id) && sensor?.diagnosis?.model === ANOMALY_MODEL) reported.set(channel.id, SEVERITY_STATE[sensor.diagnosis.severity]);
+    const previous = reported.get(channel.id); reported.set(channel.id, channel.state);
+    if (previous === channel.state || (previous === undefined && channel.state === "normal") || !sensor) continue;
+    diagnoses.push({ channel: channel.id, timestamp: new Date(channel.changed_unix_ms || Date.now()).toISOString(), severity: ANOMALY_SEVERITY[channel.state], title: ANOMALY_TITLE[channel.state], model: ANOMALY_MODEL,
+      description: `단기 RMS ${channel.rms_short_v.toFixed(4)} V / 장기 RMS ${channel.rms_long_v.toFixed(4)} V, 비율 ${channel.ratio.toFixed(2)} (경고 ${anomaly.warn_ratio}·위험 ${anomaly.alarm_ratio}, 시정수 ${anomaly.short_tau_s}s/${anomaly.long_tau_s}s)` });
+  }
+  return diagnoses;
+}
+
 function backlogPayload(after, limit = 2000) { const payload = Buffer.alloc(12); payload.writeBigUInt64BE(after, 0); payload.writeUInt32BE(limit, 8); return payload; }
 
 async function runConnection(board) {
@@ -197,9 +220,17 @@ async function runConnection(board) {
     const heartbeat = setInterval(() => {
       void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label,ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error));
       const timeout = setTimeout(() => client.socket.destroy(new Error("board stopped answering STATUS")), Number(process.env.BOARD_STATUS_TIMEOUT_MS || 8000));
-      client.request(TYPES.STATUS).catch(() => {}).finally(() => clearTimeout(timeout));
+      client.request(TYPES.STATUS).finally(() => clearTimeout(timeout)).then(status => reportAnomaly(status.anomaly).catch(error => log("anomaly report failed", `${uuid} ${error.message}`)), () => {});
     }, 10000);
     log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
+    const anomalyStates = new Map();
+    async function reportAnomaly(anomaly) {
+      if (!anomaly) return;
+      await liveWriter.refreshSensors(); const diagnoses = anomalyDiagnoses(anomaly, anomalyStates, liveWriter.sensors);
+      if (!diagnoses.length) return;
+      await dashboard("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: uuid, diagnoses }) });
+      for (const diagnosis of diagnoses) log("anomaly", `${uuid} ${diagnosis.channel} ${diagnosis.severity}: ${diagnosis.description}`);
+    }
     let replayCursor = cursor ?? target;
     try {
       while (cursor !== null && replayCursor < target) { const result = await client.request(backlogType, backlogPayload(replayCursor)); replayCursor = BigInt(result.last_record_id); if (!result.returned || replayCursor >= target) break; }

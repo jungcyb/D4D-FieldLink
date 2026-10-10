@@ -60,6 +60,18 @@ payload[payload_length]
 
 새 수집기는 `HELLO.capabilities`에 `timestamped_stream`이 있으면 V2 명령을 사용한다. V2는 저장 레코드의 `received_unix_ns`를 그대로 전달하므로 연결 단절 뒤 복구된 데이터도 원래 수집 시각으로 표시할 수 있다. 기존 V1 클라이언트와 메시지는 계속 지원한다.
 
+## 이상 감지 (STATUS.anomaly)
+
+보드는 `STATUS` 응답에 선택적으로 `anomaly` 객체를 넣을 수 있다. 현재 ESP32-P4 BLE 프록시가 보고하며, 채널마다 DC를 제거한 신호의 제곱을 시정수가 다른 두 1차 IIR(단기 `short_tau_s`, 장기 `long_tau_s`)로 평균해 단기/장기 RMS 비율을 구한다. 비율이 `warn_ratio`·`alarm_ratio` 이상이면 `warning`·`alarm`, 임계값의 0.8배 아래로 내려가면 해제한다. 장기 시정수 한 번이 지나기 전에는 `warmup`이다.
+
+```text
+anomaly: { method:"rms_sta_lta", state, short_tau_s, long_tau_s, warn_ratio, alarm_ratio, rms_floor_v,
+           channels:[{ id, state, rms_short_v, rms_long_v, ratio, changed_unix_ms, events }] }
+state: "warmup" | "normal" | "warning" | "alarm"
+```
+
+collector는 10초 주기 `STATUS`에서 채널 상태가 바뀔 때만 대시보드 진단(`model="edge-rms-sta-lta"`, `alarm`→`critical`)으로 올린다.
+
 ## 연결 단절 규칙
 
 TCP 연결과 M4 취득·Linux 저장은 서로 독립이다. 연결이 끊기면 해당 client의 라이브 전송만 사라지고 보드 기록은 계속된다. 클라이언트는 마지막으로 처리한 `record_id`를 기억했다가 재접속 후 다음 순서로 복구한다.
@@ -67,6 +79,8 @@ TCP 연결과 M4 취득·Linux 저장은 서로 독립이다. 연결이 끊기�
 1. `ARCHIVE_INFO`로 마지막 record가 아직 보존 중인지 확인한다.
 2. `READ_BACKLOG(after_record_id=마지막 record)`를 `more=false`까지 반복한다.
 3. `STREAM_START`로 라이브 전송을 시작한다.
+
+ESP32-P4 BLE 프록시는 같은 명령을 PSRAM 링(기본 16 MiB, 104 Hz에서 약 90분)으로 제공한다. `ARCHIVE_INFO.storage`는 `"memory"`이고 재부팅하면 비워지며, record_id는 NVS 부팅 횟수를 상위 비트(`<<40`)에 넣어 재부팅 뒤에도 계속 증가한다.
 
 링의 가장 오래된 파일이 이미 삭제됐다면 `earliest_record_id`보다 이전 데이터는 복구할 수 없다. MCU sequence는 재부팅 때 초기화될 수 있으므로 누락 복구 cursor로는 보드가 부여하는 64-bit `record_id`를 사용한다.
 
