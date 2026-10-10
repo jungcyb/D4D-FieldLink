@@ -60,7 +60,7 @@ td small,.priority-meta,.priority-note,.priority-item p,.network-description{fon
 .calibration-summary code{font-size:12px;color:#294a5e}.diagnosis-title{color:#1b4256}
 .signal-instrument{background:#101e2d;color:#c9d9e7;border:1px solid #334a5f;border-radius:5px;overflow:hidden}
 .plot-controls{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:10px 12px;background:#192d40;border-bottom:1px solid #354a5e}
-.plot-controls button{background:#263e52;color:#e3eef5;border:1px solid #526d83;border-radius:3px;min-height:31px;padding:4px 10px;font-size:12px}
+.plot-controls button,.plot-controls select{background:#263e52;color:#e3eef5;border:1px solid #526d83;border-radius:3px;min-height:31px;padding:4px 10px;font-size:12px}
 .plot-controls label{display:flex;align-items:center;gap:6px;font-size:12px;padding:0 6px}.plot-controls input{accent-color:#46d5c1}
 .plot-controls .plot-expand{margin-left:auto}.plot-controls button:disabled{opacity:.4}
 .plot-readout{display:flex;gap:20px;align-items:center;min-height:37px;padding:8px 14px;font:12px var(--font-mono);color:#c2d3e1;border-bottom:1px solid #293c50}

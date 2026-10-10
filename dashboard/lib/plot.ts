@@ -19,3 +19,8 @@ export function valueDomain(points: SignalPoint[]): PlotRange {
   return [min - padding, max + padding];
 }
 export const formatValue = (value: number) => Number(value.toPrecision(7)).toString();
+
+/** Raw axis ends at the sample-count boundary; data indices still end at count - 1. */
+export function rawPlotRange(count:number,range:PlotRange|null=null):PlotRange{
+  return range?fitRange(...range,count+1):[0,Math.max(1,count)];
+}
