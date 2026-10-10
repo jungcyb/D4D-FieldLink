@@ -1,0 +1,3 @@
+# Plotting is only needed for training reports, not edge inference.
+-r requirements-edge.txt
+matplotlib>=3.9,<4

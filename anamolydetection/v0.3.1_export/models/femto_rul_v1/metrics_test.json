@@ -1,0 +1,87 @@
+{
+  "test_windows": 15927,
+  "mae_hours": 1.956012165686027,
+  "rmse_hours": 2.4572326058848275,
+  "baseline_train_mean_hours": 2.9391083773624582,
+  "baseline": {
+    "mae_hours": 1.6878898940053826,
+    "rmse_hours": 1.9323901874078195
+  },
+  "asset_macro_mae_hours": 2.0914376069176797,
+  "per_asset": [
+    {
+      "asset_id": "Bearing1_3",
+      "windows": 2375,
+      "mae_hours": 0.7323573608486633,
+      "rmse_hours": 1.0002530680312225,
+      "baseline_mae_hours": 1.6687446700893867
+    },
+    {
+      "asset_id": "Bearing1_5",
+      "windows": 2463,
+      "mae_hours": 2.7078167770240262,
+      "rmse_hours": 3.1488171094918402,
+      "baseline_mae_hours": 1.7441396439883414
+    },
+    {
+      "asset_id": "Bearing1_6",
+      "windows": 2448,
+      "mae_hours": 1.878170165792647,
+      "rmse_hours": 2.29284478073263,
+      "baseline_mae_hours": 1.7310502051213463
+    },
+    {
+      "asset_id": "Bearing1_7",
+      "windows": 2259,
+      "mae_hours": 2.2264932880128154,
+      "rmse_hours": 2.4142083579882874,
+      "baseline_mae_hours": 1.574934654917468
+    },
+    {
+      "asset_id": "Bearing2_3",
+      "windows": 1955,
+      "mae_hours": 1.8472661710795635,
+      "rmse_hours": 2.195078816543702,
+      "baseline_mae_hours": 1.3669790843757161
+    },
+    {
+      "asset_id": "Bearing2_4",
+      "windows": 751,
+      "mae_hours": 0.621931090065936,
+      "rmse_hours": 0.9002545202174487,
+      "baseline_mae_hours": 1.8974417106957915
+    },
+    {
+      "asset_id": "Bearing2_5",
+      "windows": 2311,
+      "mae_hours": 2.6248282094069886,
+      "rmse_hours": 3.0570447300124495,
+      "baseline_mae_hours": 1.6161519182903703
+    },
+    {
+      "asset_id": "Bearing2_6",
+      "windows": 701,
+      "mae_hours": 1.0194904273828314,
+      "rmse_hours": 1.5474879639963217,
+      "baseline_mae_hours": 1.966886155140236
+    },
+    {
+      "asset_id": "Bearing2_7",
+      "windows": 230,
+      "mae_hours": 4.3673273950549385,
+      "rmse_hours": 4.586969523517956,
+      "baseline_mae_hours": 2.6210528218069027
+    },
+    {
+      "asset_id": "Bearing3_3",
+      "windows": 434,
+      "mae_hours": 2.888695184508386,
+      "rmse_hours": 3.458197718345879,
+      "baseline_mae_hours": 2.3377194884735695
+    }
+  ],
+  "batch_prediction_seconds": 0.03803759999573231,
+  "batch_prediction_ms_per_window": 0.0023882463738137947,
+  "timing_note": "Batch model prediction only; excludes NPZ loading and feature extraction, not edge single-window latency.",
+  "note": "Held-out assets only; no calibrated uncertainty or proof of applicability to other equipment/operating conditions."
+}

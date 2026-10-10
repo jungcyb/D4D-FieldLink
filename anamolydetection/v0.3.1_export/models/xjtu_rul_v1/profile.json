@@ -1,0 +1,33 @@
+{
+  "profile_id": "xjtu_sy/vibration/2ch/25600hz/v1",
+  "feature_schema_version": "edge_window_v2",
+  "feature_mode": "waveform",
+  "sensor_type": "vibration",
+  "unit": "source_native_unverified",
+  "channels": [
+    "horizontal",
+    "vertical"
+  ],
+  "window_seconds": 1.28,
+  "target_sample_rate_hz": 25600,
+  "min_sample_rate_hz": 25600,
+  "max_sample_rate_hz": 25600,
+  "frequency_bands_hz": [
+    [
+      0,
+      1000
+    ],
+    [
+      1000,
+      3000
+    ],
+    [
+      3000,
+      6000
+    ],
+    [
+      6000,
+      12800
+    ]
+  ]
+}

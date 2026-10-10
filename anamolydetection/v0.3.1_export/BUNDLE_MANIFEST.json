@@ -1,0 +1,213 @@
+{
+  "bundle_version": "v0.3.1",
+  "code_basis": "versions/v0.3.1 (snapshot derived from v0.3, including XJTU-SY adapter)",
+  "source_git_head": "43836209d87d06d5ccf47e2e5c30e6f32a427472",
+  "status": "experimental_candidate_not_approved_for_field_use",
+  "trained_models": [
+    "xjtu_rul_v1",
+    "femto_rul_v1"
+  ],
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.1",
+    "joblib": "1.6.0",
+    "threadpoolctl": "3.7.0"
+  },
+  "test_evaluation": {
+    "xjtu_rul_v1": {
+      "test_windows": 505,
+      "mae_hours": 6.030349849242842,
+      "rmse_hours": 9.878730809129477,
+      "baseline_train_mean_hours": 15.902509954493745,
+      "baseline": {
+        "mae_hours": 13.755381241622457,
+        "rmse_hours": 13.856585151212713
+      },
+      "asset_macro_mae_hours": 4.250101655412924,
+      "per_asset": [
+        {
+          "asset_id": "Bearing1_5",
+          "windows": 52,
+          "mae_hours": 4.1984028636243504,
+          "rmse_hours": 5.24817749635504,
+          "baseline_mae_hours": 15.477509954493744
+        },
+        {
+          "asset_id": "Bearing2_5",
+          "windows": 339,
+          "mae_hours": 8.231523934493888,
+          "rmse_hours": 11.878592957813844,
+          "baseline_mae_hours": 13.085843287827078
+        },
+        {
+          "asset_id": "Bearing3_5",
+          "windows": 114,
+          "mae_hours": 0.3203781681205321,
+          "rmse_hours": 0.38756632734397617,
+          "baseline_mae_hours": 14.960843287827078
+        }
+      ],
+      "batch_prediction_seconds": 0.0025508999999601656,
+      "batch_prediction_ms_per_window": 0.005051287128633991,
+      "timing_note": "Batch model prediction only; excludes NPZ loading and feature extraction, not edge single-window latency.",
+      "note": "Held-out assets only; no calibrated uncertainty or proof of applicability to other equipment/operating conditions."
+    },
+    "femto_rul_v1": {
+      "test_windows": 15927,
+      "mae_hours": 1.956012165686027,
+      "rmse_hours": 2.4572326058848275,
+      "baseline_train_mean_hours": 2.9391083773624582,
+      "baseline": {
+        "mae_hours": 1.6878898940053826,
+        "rmse_hours": 1.9323901874078195
+      },
+      "asset_macro_mae_hours": 2.0914376069176797,
+      "per_asset": [
+        {
+          "asset_id": "Bearing1_3",
+          "windows": 2375,
+          "mae_hours": 0.7323573608486633,
+          "rmse_hours": 1.0002530680312225,
+          "baseline_mae_hours": 1.6687446700893867
+        },
+        {
+          "asset_id": "Bearing1_5",
+          "windows": 2463,
+          "mae_hours": 2.7078167770240262,
+          "rmse_hours": 3.1488171094918402,
+          "baseline_mae_hours": 1.7441396439883414
+        },
+        {
+          "asset_id": "Bearing1_6",
+          "windows": 2448,
+          "mae_hours": 1.878170165792647,
+          "rmse_hours": 2.29284478073263,
+          "baseline_mae_hours": 1.7310502051213463
+        },
+        {
+          "asset_id": "Bearing1_7",
+          "windows": 2259,
+          "mae_hours": 2.2264932880128154,
+          "rmse_hours": 2.4142083579882874,
+          "baseline_mae_hours": 1.574934654917468
+        },
+        {
+          "asset_id": "Bearing2_3",
+          "windows": 1955,
+          "mae_hours": 1.8472661710795635,
+          "rmse_hours": 2.195078816543702,
+          "baseline_mae_hours": 1.3669790843757161
+        },
+        {
+          "asset_id": "Bearing2_4",
+          "windows": 751,
+          "mae_hours": 0.621931090065936,
+          "rmse_hours": 0.9002545202174487,
+          "baseline_mae_hours": 1.8974417106957915
+        },
+        {
+          "asset_id": "Bearing2_5",
+          "windows": 2311,
+          "mae_hours": 2.6248282094069886,
+          "rmse_hours": 3.0570447300124495,
+          "baseline_mae_hours": 1.6161519182903703
+        },
+        {
+          "asset_id": "Bearing2_6",
+          "windows": 701,
+          "mae_hours": 1.0194904273828314,
+          "rmse_hours": 1.5474879639963217,
+          "baseline_mae_hours": 1.966886155140236
+        },
+        {
+          "asset_id": "Bearing2_7",
+          "windows": 230,
+          "mae_hours": 4.3673273950549385,
+          "rmse_hours": 4.586969523517956,
+          "baseline_mae_hours": 2.6210528218069027
+        },
+        {
+          "asset_id": "Bearing3_3",
+          "windows": 434,
+          "mae_hours": 2.888695184508386,
+          "rmse_hours": 3.458197718345879,
+          "baseline_mae_hours": 2.3377194884735695
+        }
+      ],
+      "batch_prediction_seconds": 0.03803759999573231,
+      "batch_prediction_ms_per_window": 0.0023882463738137947,
+      "timing_note": "Batch model prediction only; excludes NPZ loading and feature extraction, not edge single-window latency.",
+      "note": "Held-out assets only; no calibrated uncertainty or proof of applicability to other equipment/operating conditions."
+    }
+  },
+  "files_sha256": {
+    "DATASET_STRATEGY.md": "998bd31198aed643f0892cd1a3c6817267f211ff6f49a595ec68931715ae6653",
+    "DEPLOYMENT.md": "5dc8acc89b0bd6c7199246c4a3612932836fbfad8d012375a9b6dbe2474834b5",
+    "FEMTO_SPLIT.md": "bb42757ff5e06daaacbc6d08e42d528d9dee32965754435181c175dd5516236a",
+    "FEMTO_TRAINING.md": "9c377113c90738b30008bf5b7655a4238ff0763bf70eeb303b4b5422ec1d5ba6",
+    "INPUT_OUTPUT.md": "2613cb78cf9dbc42b438a589a56dda7e318b85be5d63787d23bdd9f3ec3f13a2",
+    "MODEL_ARCHITECTURE.md": "0be7afd1bf4add3ff74ba281763dd7c26da8c763abf56c4e04eb76ba0a8d518d",
+    "MODEL_SPEC.md": "988241536a1a049554a35c73b5e4229054fd97093850432ec3c582babcebcee1",
+    "README_EXPORT.md": "2cf0eac161fe4b46fd9c0a5c5045a1e0c5d51d065ca8b4aa4f71fbfad92d803c",
+    "RESULTS_FEMTO_RUL_V1.md": "73c39028c7b145d5a531c96f3dcd7d2b9dfe8baf6c931de94c1140684be5727e",
+    "RESULTS_XJTU_RUL_V1.md": "361536d5763817ca1d6c881625f34e761e70fc88a9b48aad9a9e57e04f4cd352",
+    "anomaly.py": "3dd51fbef7d0ada3ef4234e5a6621f4ae0981739025933553b3dca27cd496af1",
+    "anomaly_features.py": "8533a5bd43f76089238270da97b62cc7d898e914c104592e7639439245de0848",
+    "examples/edge_profile.json": "dd21fdceba0a0bf7d211f67da662756020d12001be5680752c4c1eb7562da6e5",
+    "examples/synthetic_femto_rul_v1.npz": "21fa5caa7e2f95149702c494c47e882497800cb1c5f89a9a06506612fd2af1ec",
+    "examples/synthetic_xjtu_rul_v1.npz": "863e3c056c765f4c897c730ece9afc874413922b5b589526e37211b21770a81b",
+    "examples/temperature_profile.json": "701c1d87f42fa9e345337537b3e1c5a5af056520dca5ccd88a2f0cf410bdcd73",
+    "fault.py": "c6462991b92a4599c6537d257fb7cf68ef3341d72c82043177d7c82f269d9488",
+    "features.py": "1c9826d05411d03cc6e48133e601e05cf41d19a5de0328a6cd201b455324e1ab",
+    "models/femto_rul_v1/metadata.json": "306e7e793d9558e8210270e156b28cc9e7e616f963053ee9d11e7b4e88f245f7",
+    "models/femto_rul_v1/metrics.json": "8ba7c878f1e2150debde1755ff20ae992c43c10d790494eefbcfbbc84ca8437e",
+    "models/femto_rul_v1/metrics_test.json": "8ba7c878f1e2150debde1755ff20ae992c43c10d790494eefbcfbbc84ca8437e",
+    "models/femto_rul_v1/metrics_validation.json": "9d697fdb26e2890dd214ff495eae1fcc5e6f521878e2d9043e73b1ee7152c273",
+    "models/femto_rul_v1/model.joblib": "e0ebd0d53486c4fef2e87fd9dd43ba303bca7d2fded1b7cb646b36fd3b670c23",
+    "models/femto_rul_v1/plots/test/actual_vs_predicted.png": "2f8f7210910ab8b744adea05c2249b84b325cd6418f5c14e1d121de51cc40c03",
+    "models/femto_rul_v1/plots/test/asset_000.png": "273db3f5d9c7423b43778edb6193f8282814d5b9b75befdfd341f0ac463216c8",
+    "models/femto_rul_v1/plots/test/asset_001.png": "8845067a99cc9cde72ea46668efe711079301e3b34c30c53fbe61a93dbbdeccf",
+    "models/femto_rul_v1/plots/test/asset_002.png": "1c1bae7bb30abe9515f0ea8923d5002f67603f413f90157ebd130072eda33e0e",
+    "models/femto_rul_v1/plots/test/asset_003.png": "a52237fcc43c27169e26c4456d551249acf4ba04bf93acb67dfc2d1519295769",
+    "models/femto_rul_v1/plots/test/asset_004.png": "cc42aad95d7d811a691a0982e46d44200fd7b503b1003aedce932f5c39357772",
+    "models/femto_rul_v1/plots/test/asset_005.png": "a6121c6748b2b02307902bae56ca7eee67650962f0c67dc2f49b439f55c41690",
+    "models/femto_rul_v1/plots/test/asset_006.png": "ea6dd0adae9582ecac59fa0dd014cecfcc3e81091a2ffe5b2ab06d4ceba20994",
+    "models/femto_rul_v1/plots/test/asset_007.png": "5b8e59230ce9f0f5d3bca1d4038db739203d7f955ce3e8a6c7cdaece0a9742f8",
+    "models/femto_rul_v1/plots/test/asset_008.png": "004ffac7652aa576bd754b460ebb2d21ea3bc4fdb9a520ab8bfd64e00f26dbab",
+    "models/femto_rul_v1/plots/test/asset_009.png": "7c1a65158b2c7f1d049d4d6b6c1fdf28210d9e519e60e9635a567bee7a93140e",
+    "models/femto_rul_v1/plots/validation/actual_vs_predicted.png": "30682a723c183a54e0b37b696bff1d7df23a0c03f82cee628b5ed2e5247cd8ca",
+    "models/femto_rul_v1/plots/validation/asset_000.png": "81d776afe29416a462b3669dc1dedfa8537cd79ac162259fc8b32ecccb1452c1",
+    "models/femto_rul_v1/plots/validation/asset_001.png": "7f8589fa618e10b631f901738030bd266743a74393b1e06a64123febcf97719e",
+    "models/femto_rul_v1/plots/validation/asset_002.png": "a36f841ff96e2c0b330dd22dc8be614c46bfa954eb4c559ad223b7838f475005",
+    "models/femto_rul_v1/profile.json": "38c4c9da9e0e2366176ff952e2c3881bc45ab46b6b110e9ce2cb5737023020d7",
+    "models/femto_rul_v1/rul_test_asset_metrics.csv": "d1e4b31ca875ed2def1278a889e143f2c5d330aa53b02fe0acf39d0f5263df42",
+    "models/femto_rul_v1/rul_validation_asset_metrics.csv": "5d26bcf989f381a90eed1a347f89592e73ed6cbf8f4ca4fa3b564512de0b1524",
+    "models/xjtu_rul_v1/metadata.json": "926f667906331b96598a16096eb739215a54906ad4bd519a1932007d56b78692",
+    "models/xjtu_rul_v1/metrics.json": "04624c39aa0684dea2099a5314e2642bb42da99cb42249c0d968ad1667d22483",
+    "models/xjtu_rul_v1/metrics_test.json": "04624c39aa0684dea2099a5314e2642bb42da99cb42249c0d968ad1667d22483",
+    "models/xjtu_rul_v1/metrics_validation.json": "985bce2c3d9d70a1fea5b4993323fefb7050257f53053f35893bd285f412a90f",
+    "models/xjtu_rul_v1/model.joblib": "32ec2678fff555b00a5f0b9d2f763ba6216d1eaaf27c2ed84eb460b3d7f179cd",
+    "models/xjtu_rul_v1/plots/test/actual_vs_predicted.png": "2e329064eb36944899a88fedf7c5238559317c829a3c98007502ec18fb1a1085",
+    "models/xjtu_rul_v1/plots/test/asset_000.png": "b55c105d17d1f8b5d8044a1261adebc43c4aa8d9dac7ea1a9432949acf0fe782",
+    "models/xjtu_rul_v1/plots/test/asset_001.png": "36989b47cc17dddc43f1c29bdfe7b76cb4c9d67991794a9bff32584cad916f97",
+    "models/xjtu_rul_v1/plots/test/asset_002.png": "317ec6709f4785412899a5f8fa7eb9dd05b031fec6eb28683ce483871b8cde46",
+    "models/xjtu_rul_v1/plots/validation/actual_vs_predicted.png": "1f027f660d9ba40421034cdee99091e44e45cfc7625813ff7a9b89a873806961",
+    "models/xjtu_rul_v1/plots/validation/asset_000.png": "2cec87c8b93bf4f09d9d7aaa54196b16ccfcfc0f3a8b14bf0a41d668a3ed6f01",
+    "models/xjtu_rul_v1/plots/validation/asset_001.png": "d07eb9bc53036038af39503b4671f882db2db2162a53262f280439d0681f74ef",
+    "models/xjtu_rul_v1/plots/validation/asset_002.png": "96d391f481fa39a98bdb5023f457e760f2ccaaa684d48a330fa168189475f700",
+    "models/xjtu_rul_v1/profile.json": "4834a908a105a0de1ee28e2df20d57fd5aafe8d751ef58af7d9dc943fb78bf98",
+    "models/xjtu_rul_v1/rul_test_asset_metrics.csv": "18734d9d2adae58dda3798b0a79cc140266d0d1a84a57a21ace7c8e8d188fe10",
+    "models/xjtu_rul_v1/rul_validation_asset_metrics.csv": "216e9cdaafba0178d1f7a9f2e08ce5f153353e0dd978497f59832a9565dca317",
+    "predictive.py": "a6bd987a9cb5dc3b709c077dc84a3cfe97dda23bc6a8e27b5b7257a3f1b0bda2",
+    "prepare_femto_rul.py": "6d5153dd1e1474428e44d12eedc853edd3206cfa43dc10cf4ed5e10ac42919b6",
+    "prepare_femto_split.py": "f46cd9820cb24dd4c5a8dd2b27d1e46efd56ec33883ab5bc0c667665b30ac380",
+    "prepare_xjtu_rul.py": "68d65ed4c683cf20527efba0917077f7d02697064ec2bd83483020c78c20dec5",
+    "requirements-edge.txt": "71b0dbf44672319b1fd36d6a3a1cd5e98e2e3f6e36084fb7eaad267669fff1f9",
+    "requirements-runtime.lock.txt": "b96b2c91f111d6487ac00ad83098db88e36de5fde6b38118b3d6f54eaa5ed891",
+    "requirements-train.txt": "b382981cfca411e5b5a354379b64196fcc5787c94beec727c4dbf68e0dc37016",
+    "rul.py": "5ce746e8da9378f89526b06feb2a9beecd49090961f683cfbd99ce1eda649f43",
+    "verify_bundle.py": "2da3ee9e2123f232b877ab079332f5bbabc03e7bbd91e671218cafb18b0c1cd4",
+    "xjtu_expected_counts.json": "e4ff076e14b761e7afd74b1b0594ee020f3d1d42987422afa2f0f6b354736fb2"
+  }
+}
