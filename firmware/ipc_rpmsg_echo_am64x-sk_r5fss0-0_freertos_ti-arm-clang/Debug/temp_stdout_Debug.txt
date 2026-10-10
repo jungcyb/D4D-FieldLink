@@ -1,0 +1,36 @@
+[C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc_tmp] Parsing file ...
+Found section 0 with adddress 0x00000000, size 0x00000040 bytes
+Found section 1 with adddress 0x70080000, size 0x0001b220 bytes
+Found section 2 with adddress 0x7009b220, size 0x000020b0 bytes
+Found section 3 with adddress 0x700b0ee0, size 0x00000f90 bytes
+Found section 4 with adddress 0x700b1e70, size 0x000004a0 bytes
+Found section 5 with adddress 0x700b2310, size 0x000003c0 bytes
+Found section 6 with adddress 0x700b26d0, size 0x000001c0 bytes
+Found section 7 with adddress 0x700b2890, size 0x00000008 bytes
+Found section 8 with adddress 0x700b2898, size 0x00000a60 bytes
+[C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc_tmp] Found 9 sections. 9 are non-XIP sections, 0 are XIP sections, NON-XIP entryPoint = 0x00000000
+Merging section @ 0x7009b220 of size 0x000020b0, with section @ 0x70080000 of size 0x0001b220
+Merging section @ 0x700b1e70 of size 0x000004a0, with section @ 0x700b0ee0 of size 0x00000f90
+Merging section @ 0x700b2310 of size 0x000003c0, with section @ 0x700b0ee0 of size 0x00001430
+Merging section @ 0x700b26d0 of size 0x000001c0, with section @ 0x700b0ee0 of size 0x000017f0
+Merging section @ 0x700b2890 of size 0x00000008, with section @ 0x700b0ee0 of size 0x000019b0
+Merging section @ 0x700b2898 of size 0x00000a60, with section @ 0x700b0ee0 of size 0x000019b8
+Writing section header  #0, adddress 0x00000000, size 0x00000040 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x00000000, size 0x00000040 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section header  #1, adddress 0x70080000, size 0x0001d2d0 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x70080000, size 0x0001b220 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x7009b220, size 0x000020b0 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section header  #2, adddress 0x700b0ee0, size 0x00002418 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x700b0ee0, size 0x00000f90 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x700b1e70, size 0x000004a0 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x700b2310, size 0x000003c0 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x700b26d0, size 0x000001c0 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x700b2890, size 0x00000008 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+Writing section data with adddress 0x700b2898, size 0x00000a60 bytes to file [C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc]
+[C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc] Parsing file ...
+Found section 0 with adddress 0x00000000, size 0x00000040 bytes
+Found section 1 with adddress 0x70080000, size 0x0001d2d0 bytes
+Found section 2 with adddress 0x700b0ee0, size 0x00002418 bytes
+[C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc] Found 3 sections. 3 are non-XIP sections, 0 are XIP sections, NON-XIP entryPoint = 0x00000000
+[C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc_xip] Parsing file ...
+[C:/Users/speed/git/D4D-FieldLink/firmware/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang/Debug/ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.rprc_xip] Found 0 sections. 0 are non-XIP sections, 0 are XIP sections, NON-XIP entryPoint = 0x00000000

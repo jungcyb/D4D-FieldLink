@@ -4,7 +4,7 @@
 
 SHELL = cmd.exe
 
-CG_TOOL_ROOT := C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS
+CG_TOOL_ROOT := C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS
 
 GEN_OPTS__FLAG := 
 GEN_CMDS__FLAG := -Wl,-l"syscfg/linker.cmd" 
@@ -147,7 +147,7 @@ all: $(OBJS) $(GEN_CMDS)
 # Tool invocations
 ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.out: $(OBJS) $(GEN_CMDS)
 	@echo 'Arm Linker - building target: "$@"'
-	"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/bin/tiarmclang.exe" -mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16 -mlittle-endian -mthumb -DSOC_AM64X -DOS_FREERTOS -D_DEBUG_=1 -g -Wall -Werror -Wno-gnu-variable-sized-type-not-at-end -Wno-unused-function -Wl,-m"ipc_rpmsg_echo.Debug.map" -Wl,-i"C:/ti/mcu_plus_sdk_am64x_11_02_00_24/source/kernel/freertos/lib" -Wl,-i"C:/ti/mcu_plus_sdk_am64x_11_02_00_24/source/drivers/lib" -Wl,-i"C:/ti/mcu_plus_sdk_am64x_11_02_00_24/source/board/lib" -Wl,-i"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib" -Wl,--reread_libs -Wl,--diag_suppress=10063 -Wl,--diag_wrap=off -Wl,--display_error_number -Wl,--warn_sections -Wl,--gen_xml_func_hash -Wl,--xml_link_info="ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang_linkInfo.xml" -Wl,--ram_model -o "ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.out" $(ORDERED_OBJS)
+	"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/bin/tiarmclang.exe" -mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16 -mlittle-endian -mthumb -DSOC_AM64X -DOS_FREERTOS -D_DEBUG_=1 -g -Wall -Werror -Wno-gnu-variable-sized-type-not-at-end -Wno-unused-function -Wl,-m"ipc_rpmsg_echo.Debug.map" -Wl,-i"C:/ti/mcu_plus_sdk_am64x_11_02_00_24/source/kernel/freertos/lib" -Wl,-i"C:/ti/mcu_plus_sdk_am64x_11_02_00_24/source/drivers/lib" -Wl,-i"C:/ti/mcu_plus_sdk_am64x_11_02_00_24/source/board/lib" -Wl,-i"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib" -Wl,--reread_libs -Wl,--diag_suppress=10063 -Wl,--diag_wrap=off -Wl,--display_error_number -Wl,--warn_sections -Wl,--gen_xml_func_hash -Wl,--xml_link_info="ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang_linkInfo.xml" -Wl,--ram_model -o "ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang.out" $(ORDERED_OBJS)
 	@echo 'Finished building target: "$@"'
 	@echo ' '
 	@$(MAKE) --no-print-directory post-build
@@ -161,7 +161,7 @@ clean:
 	-@echo ' '
 
 post-build:
-	-$(MAKE) -C C:\Users\10133\Documents\contest\ads8688_am6442_sk\firmware\ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang -f makefile_ccs_bootimage_gen OUTNAME=ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang PROFILE=Debug MCU_PLUS_SDK_PATH=C:/ti/mcu_plus_sdk_am64x_11_02_00_24 CG_TOOL_ROOT=C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS CCS_INSTALL_DIR=C:\ti\ccs2101\ccs\ CCS_IDE_MODE=desktop DEVICE=am64x
+	-$(MAKE) -C C:\Users\speed\git\D4D-FieldLink\firmware\ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang -f makefile_ccs_bootimage_gen OUTNAME=ipc_rpmsg_echo_am64x-sk_r5fss0-0_freertos_ti-arm-clang PROFILE=Debug MCU_PLUS_SDK_PATH=C:/ti/mcu_plus_sdk_am64x_11_02_00_24 CG_TOOL_ROOT=C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS CCS_INSTALL_DIR=C:\ti\ccs2100\ccs\ CCS_IDE_MODE=desktop DEVICE=am64x
 	-@echo ' '
 
 .PHONY: all clean dependents

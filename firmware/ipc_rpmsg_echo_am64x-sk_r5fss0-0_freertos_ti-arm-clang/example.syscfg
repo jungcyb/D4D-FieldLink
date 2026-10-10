@@ -47,10 +47,9 @@ const section11       = section.addInstance();
  * Write custom configuration values to the imported modules.
  */
 mcspi1.$name                       = "CONFIG_ADS1263_MCSPI";
-mcspi1.intrEnable                  = "POLLED";
-mcspi1.inputSelect                 = "0";
-mcspi1.dpe0                        = "DISABLE";
-mcspi1.dpe1                        = "ENABLE";
+mcspi1.inputSelect                 = "1";
+mcspi1.dpe0                        = "ENABLE";
+mcspi1.dpe1                        = "DISABLE";
 mcspi1.SPI.$assign                 = "SPI1";
 mcspi1.mcspiChannel[0].$name       = "CONFIG_ADS1263_CH0";
 mcspi1.mcspiChannel[0].frameFormat = "POL0_PHA1";
@@ -64,8 +63,10 @@ gpio1.GPIO.gpioPin.$assign = "GPMC0_BE0n_CLE";
 
 gpio2.$name                = "ADS1263_RESET";
 gpio2.pinDir               = "OUTPUT";
+gpio2.defaultValue         = "1";
 gpio2.GPIO.$assign         = "GPIO0";
 gpio2.GPIO.gpioPin.$assign = "GPMC0_ADVn_ALE";
+
 
 debug_log.enableCssLog             = false;
 debug_log.enableUartLog            = true;
