@@ -1,0 +1,16 @@
+# Applied on top of sdkconfig.defaults when IDF_TARGET=esp32p4.
+#
+# The P4 has no BT controller of its own: NimBLE runs here as a
+# host-only stack and talks to the controller on the on-board ESP32-C6
+# through ESP-Hosted (SDIO, VHCI).
+CONFIG_BT_CONTROLLER_DISABLED=y
+CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+
+CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+CONFIG_ESP_HOSTED_ENABLED=y
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+
+# ESP-Hosted recommends a 1 ms tick to avoid SDIO bus jitter.
+CONFIG_FREERTOS_HZ=1000

@@ -9,7 +9,7 @@ foreach ($runtimePath in $runtimeCandidates) {
   if ($runtimePath -and (Test-Path -LiteralPath $runtimePath)) {
     $runtimeVersion = & $runtimePath --version
     if ([version]($runtimeVersion.TrimStart('v')) -ge [version]'22.18.0') {
-      & $runtimePath node_modules/next/dist/bin/next dev --hostname $ListenAddress --port $Port
+      & $runtimePath node_modules/next/dist/bin/next dev --webpack --hostname $ListenAddress --port $Port
       exit $LASTEXITCODE
     }
   }

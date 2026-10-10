@@ -1,0 +1,96 @@
+menu "FieldLink BLE proxy"
+
+    config FIELDLINK_BLE_ENCRYPTED
+        bool "Require an encrypted + authenticated BLE link"
+        default n
+        help
+            Passed to ble_uart_config_t::encrypted. When on, the sensor
+            must complete LE Secure Connections pairing with passkey entry
+            (the passkey is printed on this console) before it can write.
+            Off by default: the current sensor (NU40) has no keypad, so
+            the link runs unencrypted and only the HELLO check guards it.
+
+    config FIELDLINK_DUMP_BLE_RX
+        bool "Hex-dump every BLE write"
+        default n
+        help
+            Log each BLE write with the idle gap since the previous one
+            and a hex + ASCII dump. Meant for working out the sensor's
+            data format. Leave it off for normal use: console logging
+            cannot keep up with a full-rate stream and slows the BLE host
+            task enough to skew the link-rate probe.
+
+    config FIELDLINK_DAQ_TCP_PORT
+        int "TCP control/data port"
+        default 8765
+
+    config FIELDLINK_DAQ_DISCOVERY_PORT
+        int "UDP discovery port"
+        default 8764
+
+    config FIELDLINK_DAQ_MAX_CLIENTS
+        int "Max simultaneous TCP clients"
+        range 1 8
+        default 4
+
+    config FIELDLINK_DAQ_CLIENT_TX_BUF
+        int "Per-client TX buffer (bytes)"
+        range 2048 262144
+        default 16384
+        help
+            Bytes queued for a client that is not reading fast enough.
+            When exceeded, the client is disconnected ("slow client"),
+            the same policy as the AM6442 daemon.
+
+    config FIELDLINK_DAQ_HOSTNAME_PREFIX
+        string "Hostname prefix reported in discovery"
+        default "fieldlink-p4"
+        help
+            Reported as "<prefix>-xxxx" where xxxx is the end of the
+            Ethernet MAC.
+
+    config FIELDLINK_DAQ_DEFAULT_SCAN_RATE
+        int "Scan rate reported before the first frame (Hz)"
+        default 1000
+
+    config FIELDLINK_SNTP_SERVER
+        string "SNTP server (empty to disable)"
+        default "pool.ntp.org"
+        help
+            Wall-clock time is needed for timestamped (V2) streaming.
+            Until SNTP syncs, HELLO does not advertise
+            "timestamped_stream" and the collector falls back to V1,
+            stamping frames with its own clock.
+
+    config FIELDLINK_WIFI_SSID
+        string "Wi-Fi SSID for an optional uplink (empty = Ethernet only)"
+        default ""
+        help
+            Joins this network through the ESP32-C6 (ESP-Hosted) in
+            addition to Ethernet. Useful on a bench without a cable; the
+            DAQ server answers on both links. Credentials end up in
+            sdkconfig in plain text, so keep them out of
+            sdkconfig.defaults and out of git.
+
+    config FIELDLINK_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config FIELDLINK_ETH_MDC_GPIO
+        int "Ethernet SMI MDC GPIO"
+        default 31
+
+    config FIELDLINK_ETH_MDIO_GPIO
+        int "Ethernet SMI MDIO GPIO"
+        default 52
+
+    config FIELDLINK_ETH_PHY_RST_GPIO
+        int "Ethernet PHY reset GPIO (-1 to disable)"
+        default 51
+
+    config FIELDLINK_ETH_PHY_ADDR
+        int "Ethernet PHY address (-1 to auto-detect)"
+        range -1 31
+        default -1
+
+endmenu

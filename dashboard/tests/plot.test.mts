@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {fitRange,nearestPoint,valueDomain,formatValue} from "../lib/plot.ts";
+import {fitRange,rawPlotRange,nearestPoint,valueDomain,formatValue} from "../lib/plot.ts";
 test("plot zoom and pan stay bounded, including empty and single sample",()=>{
   assert.deepEqual(fitRange(-50,50,1000),[0,100]);
   assert.deepEqual(fitRange(950,1050,1000),[899,999]);
@@ -17,4 +17,11 @@ test("autoscale handles constant, negative and tiny signals without hiding preci
   for(const value of [0,-1,10.2396875]){const domain=valueDomain([{index:0,value}]);assert.ok(domain[0]<value&&domain[1]>value);}
   const domain=valueDomain([{index:0,value:.001},{index:1,value:.0011}]);assert.ok(domain[1]-domain[0]<.0002);
   assert.notEqual(formatValue(.001),formatValue(.0011));assert.deepEqual(valueDomain([]),[-1,1]);
+});
+
+test("raw sample-count axis changes with the window while hover remains a real index",()=>{
+  assert.deepEqual(rawPlotRange(1000),[0,1000]);assert.deepEqual(rawPlotRange(2000),[0,2000]);assert.deepEqual(rawPlotRange(4000),[0,4000]);
+  const points=[{index:0,value:1},{index:1999,value:2}];assert.equal(nearestPoint(points,rawPlotRange(2000)[1])?.index,1999);
+  assert.deepEqual(rawPlotRange(2000,[1800,2200]),[1600,2000]);
+  assert.deepEqual(rawPlotRange(1),[0,1]);
 });
