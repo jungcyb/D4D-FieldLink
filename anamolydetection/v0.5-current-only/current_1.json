@@ -1,0 +1,20 @@
+{
+  "phase": "current_1",
+  "features": [
+    "current_1__std",
+    "current_1__rms",
+    "current_1__peak_to_peak",
+    "current_1__dominant_frequency_hz",
+    "current_1__spectral_centroid_hz",
+    "current_1__spectral_entropy",
+    "current_1__band_0_relative_energy",
+    "current_1__band_1_relative_energy",
+    "current_1__band_2_relative_energy"
+  ],
+  "threshold": 0.5199533440596187,
+  "source_sample_rate_hz": 2000,
+  "window_seconds": 1,
+  "source_units_verified": false,
+  "model_kind": "IsolationForest",
+  "score_convention": "-score_samples; alert if score > threshold"
+}

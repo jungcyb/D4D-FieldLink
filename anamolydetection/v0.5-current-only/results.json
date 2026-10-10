@@ -1,0 +1,223 @@
+{
+  "version": "v0.5-current-only-experimental",
+  "data_sha256": "01b7edb802c06235d76dfa21087c83b785ef8377fc764b4d6ea399eacd523215",
+  "selection": "maximum mean validation ROC AUC across three one-channel candidates",
+  "threshold": "95th percentile of independent normal-only calibration motors",
+  "seed": 42,
+  "candidate_search": [
+    {
+      "feature_set": "all",
+      "trees": 64,
+      "max_samples": 256,
+      "validation_auc_by_channel": [
+        0.40489676594189666,
+        0.47539055362689564,
+        0.39834186004019734
+      ],
+      "mean_validation_auc": 0.4262097265363299
+    },
+    {
+      "feature_set": "all",
+      "trees": 128,
+      "max_samples": 256,
+      "validation_auc_by_channel": [
+        0.3847295815823132,
+        0.45998538278823314,
+        0.3926548510871551
+      ],
+      "mean_validation_auc": 0.4124566051525671
+    },
+    {
+      "feature_set": "all",
+      "trees": 128,
+      "max_samples": 512,
+      "validation_auc_by_channel": [
+        0.37748949387904257,
+        0.4511922163347341,
+        0.3995980266764115
+      ],
+      "mean_validation_auc": 0.409426578963396
+    },
+    {
+      "feature_set": "shape_spectrum",
+      "trees": 64,
+      "max_samples": 256,
+      "validation_auc_by_channel": [
+        0.3635003654302942,
+        0.3973026676411474,
+        0.37967065594737803
+      ],
+      "mean_validation_auc": 0.38015789633960656
+    },
+    {
+      "feature_set": "shape_spectrum",
+      "trees": 128,
+      "max_samples": 256,
+      "validation_auc_by_channel": [
+        0.3677028138132652,
+        0.38856659967111273,
+        0.38906906632559846
+      ],
+      "mean_validation_auc": 0.3817794932699921
+    },
+    {
+      "feature_set": "shape_spectrum",
+      "trees": 128,
+      "max_samples": 512,
+      "validation_auc_by_channel": [
+        0.36296363968573,
+        0.4257719714964371,
+        0.41220537182532435
+      ],
+      "mean_validation_auc": 0.40031366100249716
+    },
+    {
+      "feature_set": "amplitude_spectrum",
+      "trees": 64,
+      "max_samples": 256,
+      "validation_auc_by_channel": [
+        0.47150785675132467,
+        0.4653640599305683,
+        0.44677279371459894
+      ],
+      "mean_validation_auc": 0.4612149034654973
+    },
+    {
+      "feature_set": "amplitude_spectrum",
+      "trees": 128,
+      "max_samples": 256,
+      "validation_auc_by_channel": [
+        0.4704229855655033,
+        0.45703910104147627,
+        0.45255116024118397
+      ],
+      "mean_validation_auc": 0.46000441561605454
+    },
+    {
+      "feature_set": "amplitude_spectrum",
+      "trees": 128,
+      "max_samples": 512,
+      "validation_auc_by_channel": [
+        0.4993719166818929,
+        0.4855997624703088,
+        0.45580577379864795
+      ],
+      "mean_validation_auc": 0.4802591509836165
+    }
+  ],
+  "selected": {
+    "feature_set": "amplitude_spectrum",
+    "trees": 128,
+    "max_samples": 512,
+    "validation_auc_by_channel": [
+      0.4993719166818929,
+      0.4855997624703088,
+      0.45580577379864795
+    ],
+    "mean_validation_auc": 0.4802591509836165
+  },
+  "splits": {
+    "train": {
+      "motors": [
+        "L-CAHU-03R",
+        "L-DSF-01",
+        "L-EF-01",
+        "L-EF-02",
+        "L-PAC-01",
+        "L-PAHU-02S",
+        "R-CAHU-01S",
+        "R-CAHU-02S",
+        "R-CAHU-03R",
+        "R-CAHU-03S",
+        "R-EF-01",
+        "R-EF-03",
+        "R-PAC-01R",
+        "R-PAC-01S",
+        "R-PAHU-03S",
+        "R-SF-03"
+      ],
+      "rows": 4763,
+      "normal": 663
+    },
+    "calibration": {
+      "motors": [
+        "L-CAHU-01R",
+        "L-SF-01",
+        "R-CAHU-01R",
+        "R-CAHU-02R",
+        "R-DEF-01",
+        "R-EF-05"
+      ],
+      "rows": 2149,
+      "normal": 401
+    },
+    "validation": {
+      "motors": [
+        "L-CAHU-02S",
+        "L-PAHU-03S",
+        "L-SF-04",
+        "R-SF-01"
+      ],
+      "rows": 894,
+      "normal": 52
+    },
+    "test": {
+      "motors": [
+        "L-CAHU-01S",
+        "L-DEF-01",
+        "L-EF-04",
+        "L-SF-02",
+        "R-PAHU-04S"
+      ],
+      "rows": 2194,
+      "normal": 884
+    }
+  },
+  "test": {
+    "current_1": {
+      "normal_rows": 884,
+      "fault_rows": 1310,
+      "false_alerts": 211,
+      "detected_fault_rows": 401,
+      "false_alert_rate": 0.23868778280542988,
+      "fault_recall": 0.3061068702290076,
+      "roc_auc": 0.40875358364132497,
+      "by_fault_label_recall": {
+        "1": 0.0022471910112359553,
+        "2": 0.4291497975708502,
+        "3": 0.07106598984771574,
+        "4": 1.0
+      }
+    },
+    "current_2": {
+      "normal_rows": 884,
+      "fault_rows": 1310,
+      "false_alerts": 382,
+      "detected_fault_rows": 512,
+      "false_alert_rate": 0.4321266968325792,
+      "fault_recall": 0.39083969465648855,
+      "roc_auc": 0.4421595972505268,
+      "by_fault_label_recall": {
+        "1": 0.0022471910112359553,
+        "2": 0.4331983805668016,
+        "3": 0.6243654822335025,
+        "4": 1.0
+      }
+    },
+    "current_3": {
+      "normal_rows": 884,
+      "fault_rows": 1310,
+      "false_alerts": 145,
+      "detected_fault_rows": 563,
+      "false_alert_rate": 0.16402714932126697,
+      "fault_recall": 0.4297709923664122,
+      "roc_auc": 0.5329168249801388,
+      "by_fault_label_recall": {
+        "1": 0.0044943820224719105,
+        "2": 0.4291497975708502,
+        "3": 0.8883248730964467,
+        "4": 1.0
+      }
+    }
+  }
+}
