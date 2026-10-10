@@ -1,0 +1,30 @@
+{
+  "bundle_version": "v0.4",
+  "code_basis": "versions/v0.4",
+  "source_git_head": "d7d6f35e01bd4260b211b4bf0bdd8ed5477c2c85",
+  "status": "source_snapshot_no_field_approved_model_weights",
+  "hackathon_focus": "normal_data_based_anomaly_detection_not_rul_prediction",
+  "trained_models": [],
+  "model_artifacts_included": false,
+  "files_sha256": {
+    "AI_P0_USAGE.md": "a3b48fdccd70a3a5f624729467c6d468753c83e926c9ed5ea2766e81651f85f5",
+    "README.md": "dd67d12d0090ecafd2a3aaa2d97fe16b6bbc71bce931746d45f2e4511aa7d728",
+    "README_EXPORT.md": "498f159e5f767be2cc8aa1236c65eac37d8d6ede1f809ca84da823a9d7e9094a",
+    "activation.py": "289a4f31d79977f4d7f40f0b6c5f2d44408750f4c504be6af3c38cc12182fba1",
+    "anomaly.py": "7b548203ab5d4dd30916d9210fb04aada3d848c1f97ba914450b8f0d60d6a2c1",
+    "anomaly_features.py": "2a2c3a2b933ae9a0f17692a36d0c64b2181466ab448d2925ad022ea7a19c7671",
+    "edge_config.py": "96e86ce8405a2ef396cf60b33987ef37ba02a8031b65386c00acfa5e2f21f68c",
+    "examples/edge_profile.json": "dd21fdceba0a0bf7d211f67da662756020d12001be5680752c4c1eb7562da6e5",
+    "examples/temperature_profile.json": "701c1d87f42fa9e345337537b3e1c5a5af056520dca5ccd88a2f0cf410bdcd73",
+    "fault.py": "ce7a20a3c1b4080eec392edea94fd872b787753adf64f87c794443db201a5722",
+    "features.py": "de08a42cb4b4cb920cbf8f9ce9f046773fb6b8d008a436b28e32d8d75c8f9118",
+    "normal_data.py": "fad7f76d4ad41e4bfdaf9f56d20b524845be5e2d923de001702130442d4f2a3a",
+    "predictive.py": "9e6f2c42a10c09faf2e021abce6bfaff831be4f101399212ca9021c2db19326f",
+    "requirements-edge.txt": "71b0dbf44672319b1fd36d6a3a1cd5e98e2e3f6e36084fb7eaad267669fff1f9",
+    "requirements-train.txt": "b382981cfca411e5b5a354379b64196fcc5787c94beec727c4dbf68e0dc37016",
+    "rul.py": "5ce746e8da9378f89526b06feb2a9beecd49090961f683cfbd99ce1eda649f43",
+    "runtime.py": "71fed1f3ab51c41bc07cf2c3e1fdf24daa3b3e87a65cffc14ea17b5faa78d73a",
+    "verify_bundle.py": "d8df0a98d5fb3c866a1ad2056b1fffd010064b427cf59ce72b13e6b3863ca513",
+    "window_builder.py": "6327c288540a00205fc821842ca4ffc211a1709ef1882105ca6787fcd81260f9"
+  }
+}
