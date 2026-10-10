@@ -14,7 +14,7 @@ const dashboardUrl = process.env.DASHBOARD_URL || "http://127.0.0.1:3000";
 const stateDirectory = process.env.COLLECTOR_STATE_DIR || join(ROOT, "integration", "state");
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const log = (message, details = "") => console.log(`${new Date().toISOString()} ${message}${details ? ` ${details}` : ""}`);
-let activeClient = null;
+const activeClients = new Set();
 
 export function rawCodeToVolts(code) { return -10.24 + code * 20.48 / 65536; }
 export function decodeFrame(payload, timestamped = false) {
@@ -71,12 +71,16 @@ export function decodeDiscoveryResponse(packet, sourceIp, nonce) {
   } catch { return null; }
 }
 
-export async function discover() {
-  if (process.env.BOARD_HOST) return { ip: process.env.BOARD_HOST, port: Number(process.env.BOARD_PORT || 8765), hostname: process.env.BOARD_LABEL || "AM6442-SK" };
+// BOARD_HOST may list several fixed boards ("192.168.0.240,192.168.0.62"); otherwise every board answering UDP discovery is returned.
+export async function discoverBoards() {
+  if (process.env.BOARD_HOST) {
+    const hosts = process.env.BOARD_HOST.split(",").map(host => host.trim()).filter(Boolean);
+    return hosts.map(host => ({ ip: host, port: Number(process.env.BOARD_PORT || 8765), hostname: process.env.BOARD_LABEL && hosts.length === 1 ? process.env.BOARD_LABEL : undefined }));
+  }
   const nonce = randomBytes(8).readBigUInt64BE(), query = Buffer.alloc(16); query.write("A8DQ", 0, "ascii"); query.writeUInt16BE(2, 4); query.writeBigUInt64BE(nonce, 8);
   return new Promise((resolve, reject) => {
     const socket=dgram.createSocket("udp4"),found=new Map();let finished=false,timer;
-    const finish=error=>{if(finished)return;finished=true;clearTimeout(timer);socket.close();const board=[...found.values()][0];error?reject(error):board?resolve(board):reject(new Error("ADS8688 board not found by UDP discovery"));};
+    const finish=error=>{if(finished)return;finished=true;clearTimeout(timer);socket.close();error?reject(error):resolve([...found.values()]);};
     socket.on("message",(packet,source)=>{const board=decodeDiscoveryResponse(packet,source.address,nonce);if(board&&(board.channelCapabilities||!found.get(board.uuid)?.channelCapabilities))found.set(board.uuid,board);});
     socket.on("error",finish);
     socket.bind(0,"0.0.0.0",()=>{
@@ -85,6 +89,10 @@ export async function discover() {
       for(const request of [query,legacy])socket.send(request,Number(process.env.BOARD_DISCOVERY_PORT||8764),process.env.BOARD_DISCOVERY_ADDRESS||"255.255.255.255",error=>{if(error)finish(error);});
     });
   });
+}
+
+export async function discover() {
+  const [board] = await discoverBoards(); if (!board) throw new Error("ADS8688 board not found by UDP discovery"); return board;
 }
 
 class BoardClient {
@@ -151,7 +159,7 @@ export class BatchWriter {
       } else if (readings.length) await dashboard("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: this.uuid, frameId: `record-${first.recordId}-${last.recordId}`, readings }) });
       if (!this.recovery) { await saveCursor(this.uuid, last.recordId); this.lastSaved = last.recordId; }
       if (!readings.length) log("waiting for channel registration", this.uuid);
-    }).catch(error => { this.error = error; log("dashboard ingest failed", error.message); this.client.socket.destroy(error); });
+    }).catch(error => { this.error = error; log("dashboard ingest failed", `${this.uuid} ${error.message}`); this.client.socket.destroy(error); });
   }
   async finishRecovery() {
     if (!this.recovery) return;
@@ -170,32 +178,47 @@ class OrderedFrames {
 function backlogPayload(after, limit = 2000) { const payload = Buffer.alloc(12); payload.writeBigUInt64BE(after, 0); payload.writeUInt32BE(limit, 8); return payload; }
 
 async function runConnection(board) {
-  const client = await connect(board.ip, board.port); activeClient = client; const hello = await client.request(TYPES.HELLO), uuid = hello.uuid;
-  const status=await client.request(TYPES.STATUS);
-  const channelCapabilities=status.channel_capabilities||hello.channel_capabilities||board.channelCapabilities;
-  const info={...(channelCapabilities||{}),...(status.sensors!==undefined?{sensors:status.sensors,inventoryComplete:status.inventoryComplete}:hello.sensors!==undefined?{sensors:hello.sensors,inventoryComplete:hello.inventoryComplete}:{}),...(status.sampling!==undefined?{sampling:status.sampling}:hello.sampling!==undefined?{sampling:hello.sampling}:{})};
-  await dashboard("/edge/boards", { method: "POST", body: JSON.stringify({ uuid, label: board.hostname || hello.model || "AM6442-SK", ip: board.ip, port: board.port, ...info }) });
-  const recoveries = await dashboard(`/edge/recovery?daqUuid=${encodeURIComponent(uuid)}`), recovery = recoveries.find(plan => plan.status === "pending" || plan.status === "receiving") || null;
-  const archive = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, earliest = archive?.earliest_record_id == null ? null : BigInt(archive.earliest_record_id), cursor = recoveryCursor(recovery, earliest);
-  const liveWriter = new BatchWriter(uuid, client), liveFrames = new OrderedFrames(liveWriter, null);
-  const recoveryWriter = recovery ? new BatchWriter(uuid, client, recovery) : null, recoveryFrames = recoveryWriter && cursor !== null ? new OrderedFrames(recoveryWriter, cursor + BigInt(1)) : null;
-  client.onFrame = frame => frame.archived ? recoveryFrames?.accept(frame) : liveFrames.accept(frame);
-  const timestamped = hello.capabilities?.includes("timestamped_stream"), streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
-  await client.request(streamType);
-  const afterStart = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, target = afterStart?.latest_record_id == null ? BigInt(0) : BigInt(afterStart.latest_record_id);
-  const heartbeat = setInterval(() => { void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label:board.hostname||hello.model||"AM6442-SK",ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error)); }, 10000);
-  log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
-  let replayCursor = cursor ?? target;
+  const client = await connect(board.ip, board.port); activeClients.add(client);
   try {
-    while (cursor !== null && replayCursor < target) { const result = await client.request(backlogType, backlogPayload(replayCursor)); replayCursor = BigInt(result.last_record_id); if (!result.returned || replayCursor >= target) break; }
-    if (recoveryWriter) await recoveryWriter.finishRecovery();
-    await client.closed; return liveWriter.queue;
-  } finally { clearInterval(heartbeat); activeClient = null; }
+    const hello = await client.request(TYPES.HELLO), uuid = hello.uuid, label = board.hostname || hello.model || "AM6442-SK";
+    const status=await client.request(TYPES.STATUS);
+    const channelCapabilities=status.channel_capabilities||hello.channel_capabilities||board.channelCapabilities;
+    const info={...(channelCapabilities||{}),...(status.sensors!==undefined?{sensors:status.sensors,inventoryComplete:status.inventoryComplete}:hello.sensors!==undefined?{sensors:hello.sensors,inventoryComplete:hello.inventoryComplete}:{}),...(status.sampling!==undefined?{sampling:status.sampling}:hello.sampling!==undefined?{sampling:hello.sampling}:{})};
+    await dashboard("/edge/boards", { method: "POST", body: JSON.stringify({ uuid, label, ip: board.ip, port: board.port, ...info }) });
+    const recoveries = await dashboard(`/edge/recovery?daqUuid=${encodeURIComponent(uuid)}`), recovery = recoveries.find(plan => plan.status === "pending" || plan.status === "receiving") || null;
+    const archive = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, earliest = archive?.earliest_record_id == null ? null : BigInt(archive.earliest_record_id), cursor = recoveryCursor(recovery, earliest);
+    const liveWriter = new BatchWriter(uuid, client), liveFrames = new OrderedFrames(liveWriter, null);
+    const recoveryWriter = recovery ? new BatchWriter(uuid, client, recovery) : null, recoveryFrames = recoveryWriter && cursor !== null ? new OrderedFrames(recoveryWriter, cursor + BigInt(1)) : null;
+    client.onFrame = frame => frame.archived ? recoveryFrames?.accept(frame) : liveFrames.accept(frame);
+    const timestamped = hello.capabilities?.includes("timestamped_stream"), streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
+    await client.request(streamType);
+    const afterStart = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, target = afterStart?.latest_record_id == null ? BigInt(0) : BigInt(afterStart.latest_record_id);
+    const heartbeat = setInterval(() => { void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label,ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error)); }, 10000);
+    log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
+    let replayCursor = cursor ?? target;
+    try {
+      while (cursor !== null && replayCursor < target) { const result = await client.request(backlogType, backlogPayload(replayCursor)); replayCursor = BigInt(result.last_record_id); if (!result.returned || replayCursor >= target) break; }
+      if (recoveryWriter) await recoveryWriter.finishRecovery();
+      await client.closed; return liveWriter.queue;
+    } finally { clearInterval(heartbeat); }
+  } finally { activeClients.delete(client); client.socket.destroy(); }
 }
 
 async function main() {
-  let stopping = false; const stop = () => { stopping = true; activeClient?.socket.destroy(); }; process.on("SIGINT", stop); process.on("SIGTERM", stop);
-  while (!stopping) { try { const board = await discover(); await runConnection(board); } catch (error) { log("collector retry", error instanceof Error ? error.message : String(error)); } if (!stopping) await sleep(2000); }
+  let stopping = false; const stop = () => { stopping = true; for (const client of activeClients) client.socket.destroy(); }; process.on("SIGINT", stop); process.on("SIGTERM", stop);
+  // One connection per board; discovery keeps running so boards that power up later, or drop and return, are picked up.
+  const connections = new Map(), retryAt = new Map(), discoveryInterval = Number(process.env.BOARD_DISCOVERY_INTERVAL_MS || 2000);
+  while (!stopping) {
+    try {
+      const boards = await discoverBoards(); if (!boards.length && !connections.size) log("collector retry", "no board answered UDP discovery");
+      for (const board of boards) {
+        const key = board.uuid || `${board.ip}:${board.port}`; if (connections.has(key) || (retryAt.get(key) || 0) > Date.now()) continue;
+        connections.set(key, runConnection(board).catch(error => log("collector retry", `${board.hostname || key} ${error instanceof Error ? error.message : String(error)}`)).finally(() => { connections.delete(key); retryAt.set(key, Date.now() + 2000); }));
+      }
+    } catch (error) { log("discovery failed", error instanceof Error ? error.message : String(error)); }
+    if (!stopping) await sleep(discoveryInterval);
+  }
+  await Promise.allSettled(connections.values());
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main();
