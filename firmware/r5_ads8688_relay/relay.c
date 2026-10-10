@@ -14,6 +14,7 @@
 #include "ti_drivers_open_close.h"
 #include "ti_board_open_close.h"
 #include "../common/ads8688_stream.h"
+#include "../common/ads1263_scan_stream.h"
 
 #define IPC_NOTIFY_CLIENT_ID_RP_MBOX     (15U)
 #define IPC_NOTIFY_RP_MBOX_SHUTDOWN      (0x0FFFFF14U)
@@ -129,9 +130,13 @@ static void App_m4Task(void *args)
             break;
         }
         if ((status == SystemP_SUCCESS) &&
-            (messageSize == sizeof(Ads8688StreamFrame)) &&
-            Ads8688Stream_isValid(frame))
+            (((messageSize == sizeof(Ads8688StreamFrame)) &&
+              Ads8688Stream_isValid(frame)) ||
+             ((messageSize == sizeof(Ads1263ScanFrame)) &&
+              Ads1263Scan_isValid((const Ads1263ScanFrame *)message))))
         {
+            /* ADS8688 or, with m4_ads1263 on the MCU header, ADS1263 scan
+             * frames; both are 48 bytes and forwarded unchanged. */
             received++;
             if (gLinuxReady != 0U)
             {

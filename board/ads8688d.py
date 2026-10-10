@@ -551,6 +551,10 @@ class Server:
         self.ads1263_status_poll = 0.0
         self.ads1263_last_sequence: int | None = None
         self.ads1263_report_frames = 0
+        # True once A26S frames arrive on the R5FSS0-0 relay path (m4_ads1263 on
+        # the MCU header); ADS1263 control then goes to the M4 as CTL8.
+        self.ads1263_via_m4 = False
+        self.pending_group: dict[int, str] = {}
         self.selector = selectors.DefaultSelector()
         self.clients: dict[socket.socket, Client] = {}
         self.pending: dict[int, tuple[socket.socket, int, int, float]] = {}
@@ -615,7 +619,8 @@ class Server:
             "uptime_seconds": round(time.monotonic() - self.started, 3),
             "archive": self.ring.info(),
             "ads1263": {
-                "connected": self.ads1263 is not None,
+                "connected": self.ads1263 is not None or self.ads1263_via_m4,
+                "source": "m4_mcu_header" if self.ads1263_via_m4 else "r5fss1_0",
                 "device": str(self.ads1263_device) if self.ads1263_device else None,
                 "online": self.ads1263_online,
                 "acquiring": self.ads1263_acquiring,
@@ -631,19 +636,21 @@ class Server:
         }
 
     def _send_control(
-        self, stream: socket.socket, message_type: int, request_id: int,
-        command: int, value: int = 0,
+        self, stream: socket.socket | None, message_type: int, request_id: int,
+        command: int, value: int = 0, group: str = "ads8688.scan",
     ) -> None:
         internal_id = self.control_id
         self.control_id = (self.control_id + 1) & 0xFFFFFFFF or 1
         try:
             os.write(self.rpmsg, make_control(command, internal_id, value))
         except OSError as error:
-            self._error(stream, request_id, f"RPMsg control failed: {error}")
+            if stream is not None:
+                self._error(stream, request_id, f"RPMsg control failed: {error}")
             return
         self.pending[internal_id] = (
             stream, message_type, request_id, time.monotonic()
         )
+        self.pending_group[internal_id] = group
 
     def _command(
         self, stream: socket.socket, message_type: int, request_id: int, payload: bytes
@@ -711,7 +718,11 @@ class Server:
                 if type(rate) is not int or not ADS1263_MIN_RATE <= rate <= ADS1263_MAX_RATE:
                     self._error(stream, request_id, f"rate must be {ADS1263_MIN_RATE}..{ADS1263_MAX_RATE}")
                     return
-                self._send_scan_control(stream, message_type, request_id, SCAN_CONTROL_SET_RATE, rate)
+                if self.ads1263_via_m4:
+                    self._send_control(stream, message_type, request_id, CONTROL_SET_RATE, rate,
+                                       group="ads1263.scan")
+                else:
+                    self._send_scan_control(stream, message_type, request_id, SCAN_CONTROL_SET_RATE, rate)
                 return
             if group_id != "ads8688.scan":
                 self._error(stream, request_id, "sample-rate group is not writable")
@@ -845,6 +856,9 @@ class Server:
         if not valid_scan_frame(packet):
             self.ads1263_invalid += 1
             return
+        self._ads1263_frame(packet)
+
+    def _ads1263_frame(self, packet: bytes) -> None:
         sequence, rate = ads1263_meta(packet)
         self.ads1263_rate = rate
         self.ads1263_online = self.ads1263_acquiring = True
@@ -919,10 +933,30 @@ class Server:
         if valid_control(packet):
             _magic, _version, command, internal_id, value, status, _crc = CONTROL.unpack(packet)
             pending = self.pending.pop(internal_id, None)
+            group = self.pending_group.pop(internal_id, "ads8688.scan")
             if pending is None or command & CONTROL_ACK == 0:
                 return
             stream, message_type, request_id, _started = pending
-            if stream not in self.clients:
+            if group == "ads1263.scan":
+                if command == CONTROL_ACK | 4:  # GET_STATUS from m4_ads1263
+                    self.ads1263_online = bool(value >> 31 & 1)
+                    self.ads1263_acquiring = bool(value >> 30 & 1)
+                    self.ads1263_recoveries = value >> 16 & 0x3FFF
+                    self.ads1263_rate = value & 0xFFFF or self.ads1263_rate
+                elif status == 0:
+                    self.ads1263_rate = value
+                if stream is None or stream not in self.clients:
+                    return
+                if status != 0:
+                    self._error(stream, request_id, "ADS1263 (M4) rejected control request")
+                    return
+                self._response(stream, message_type, request_id, {
+                    "group_id": "ads1263.scan",
+                    "scan_rate_hz": self.ads1263_rate,
+                    "channel_capabilities": channel_capabilities(self.scan_rate, self.ads1263_rate),
+                })
+                return
+            if stream is None or stream not in self.clients:
                 return
             if status != 0:
                 self._error(stream, request_id, "MCU rejected control request")
@@ -938,6 +972,12 @@ class Server:
                 "scan_rate_hz": value,
                 "channel_capabilities": channel_capabilities(self.scan_rate, self.ads1263_rate),
             })
+            return
+        if valid_scan_frame(packet):
+            if not self.ads1263_via_m4:
+                print("ads1263 frames arriving from the M4 (MCU header) via R5FSS0-0", flush=True)
+            self.ads1263_via_m4 = True
+            self._ads1263_frame(packet)
             return
         if not valid_frame(packet):
             self.invalid_total += 1
@@ -1047,7 +1087,9 @@ class Server:
                     stream, _message_type, request_id, started = pending
                     if now - started > 2.0:
                         self.pending.pop(internal_id)
-                        self._error(stream, request_id, "MCU control timeout")
+                        self.pending_group.pop(internal_id, None)
+                        if stream is not None and stream in self.clients:
+                            self._error(stream, request_id, "MCU control timeout")
                 for internal_id, pending in tuple(self.ads1263_pending.items()):
                     stream, _message_type, request_id, started = pending
                     if now - started > 2.0:
@@ -1057,9 +1099,12 @@ class Server:
                 if (not self.args.no_ads1263 and self.ads1263 is None
                         and now >= self.ads1263_retry):
                     self._open_ads1263()
-                if self.ads1263 is not None and now >= self.ads1263_status_poll:
+                if now >= self.ads1263_status_poll:
                     self.ads1263_status_poll = now + 10.0
-                    self._send_scan_control(None, 0, 0, SCAN_CONTROL_GET_STATUS)
+                    if self.ads1263 is not None:
+                        self._send_scan_control(None, 0, 0, SCAN_CONTROL_GET_STATUS)
+                    elif self.ads1263_via_m4:
+                        self._send_control(None, 0, 0, 4, group="ads1263.scan")
                 if now - self.last_report >= 1.0:
                     print(
                         f"frames={self.report_frames} invalid={self.report_invalid} "

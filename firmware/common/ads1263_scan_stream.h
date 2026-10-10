@@ -47,4 +47,12 @@ typedef struct __attribute__((packed))
 
 _Static_assert(sizeof(Ads1263ScanFrame) == 48U, "scan frame wire size");
 
+static inline int32_t Ads1263Scan_isValid(const Ads1263ScanFrame *frame)
+{
+    return (frame->magic == ADS1263_SCAN_MAGIC) &&
+           (frame->version == ADS1263_SCAN_VERSION) &&
+           (frame->channelCount == ADS1263_SCAN_CHANNELS) &&
+           (frame->crc32 == Ads1263_crc32(frame, offsetof(Ads1263ScanFrame, crc32)));
+}
+
 #endif

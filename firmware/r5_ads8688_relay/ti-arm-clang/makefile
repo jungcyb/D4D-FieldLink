@@ -5,7 +5,7 @@ SYSCFG_PATH?=C:/ti/sysconfig_1.27.0
 include $(MCU_PLUS_SDK_PATH)/imports.mak
 include $(MCU_PLUS_SDK_PATH)/devconfig/devconfig.mak
 
-CGT_TI_ARM_CLANG_PATH=C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS
+CGT_TI_ARM_CLANG_PATH=$(CCS_PATH)/tools/compiler/ti-cgt-armllvm_5.1.1.LTS
 CG_TOOL_ROOT=$(CGT_TI_ARM_CLANG_PATH)
 
 CC=$(CG_TOOL_ROOT)/bin/tiarmclang

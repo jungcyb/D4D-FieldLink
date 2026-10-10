@@ -11,6 +11,14 @@ R5_DEFAULT=am64-main-r5f0_0-fw
 # R5FSS1-0 echo image has been seen to ignore the next remoteproc shutdown.
 ADC2_NAME=78400000.r5f
 ADC2_CUSTOM=ads1263_scan/am64-main-r5f1_0-fw
+# Which ADC sits on the MCU header (J9): "ads8688" (default) or "ads1263".
+# With ads1263 the M4F runs m4_ads1263 and R5FSS1-0 (J4 path) stays offline,
+# so only one core ever drives the ADS1263 wires.
+MCU_ADC=$(cat /opt/ads8688/mcu_adc 2>/dev/null || echo ads8688)
+if [ "$MCU_ADC" = ads1263 ]; then
+    M4_CUSTOM=ads1263_mcu/m4_ads1263.out
+    ADC2_CUSTOM=
+fi
 
 find_remoteproc() {
     wanted=$1
@@ -49,10 +57,12 @@ case "${1:-}" in
         sleep 1
         start_core "$M4" "$M4_CUSTOM"
         sleep 1
-        if [ -n "$ADC2" ] && [ -f "/lib/firmware/$ADC2_CUSTOM" ]; then
+        if [ -n "$ADC2" ] && [ -n "$ADC2_CUSTOM" ] && [ -f "/lib/firmware/$ADC2_CUSTOM" ]; then
             stop_core "$ADC2"
             start_core "$ADC2" "$ADC2_CUSTOM"
             sleep 1
+        elif [ -n "$ADC2" ]; then
+            stop_core "$ADC2"
         fi
         ;;
     stop)
@@ -68,7 +78,8 @@ case "${1:-}" in
     status)
         printf 'M4 %s %s %s\n' "$M4" "$(cat "$M4/state")" "$(cat "$M4/firmware")"
         printf 'R5 %s %s %s\n' "$R5" "$(cat "$R5/state")" "$(cat "$R5/firmware")"
-        [ -z "$ADC2" ] || printf 'ADS1263 %s %s %s\n' "$ADC2" "$(cat "$ADC2/state")" "$(cat "$ADC2/firmware")"
+        [ -z "$ADC2" ] || printf 'R5FSS1-0 %s %s %s\n' "$ADC2" "$(cat "$ADC2/state")" "$(cat "$ADC2/firmware")"
+        printf 'MCU header ADC: %s\n' "$MCU_ADC"
         ;;
     *)
         echo "usage: $0 {start|stop|status}" >&2

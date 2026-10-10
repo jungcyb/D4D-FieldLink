@@ -52,6 +52,8 @@ int32_t Ads1263_init(Ads1263 *obj, MCSPI_Handle spiHandle, uint32_t spiChannel,
                      uint32_t resetBase, uint32_t resetPin,
                      uint32_t drdyBase, uint32_t drdyPin);
 int32_t Ads1263_resetAndConfigure(Ads1263 *obj, Ads1263InitReport *report);
+/* RESET/PWDN low 1 ms, high, then the 60 ms the STM32 reference waits. */
+void Ads1263_hardwareReset(Ads1263 *obj);
 int32_t Ads1263_start(Ads1263 *obj);
 int32_t Ads1263_stop(Ads1263 *obj);
 int32_t Ads1263_selectInput(Ads1263 *obj, uint8_t mux);

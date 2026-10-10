@@ -74,6 +74,14 @@ int32_t Ads1263_init(Ads1263 *obj, MCSPI_Handle spiHandle, uint32_t spiChannel,
     return (spiHandle == NULL) ? SystemP_FAILURE : SystemP_SUCCESS;
 }
 
+void Ads1263_hardwareReset(Ads1263 *obj)
+{
+    GPIO_pinWriteLow(obj->resetGpioBase, obj->resetGpioPin);
+    ClockP_usleep(1000U);
+    GPIO_pinWriteHigh(obj->resetGpioBase, obj->resetGpioPin);
+    ClockP_usleep(60000U);
+}
+
 int32_t Ads1263_start(Ads1263 *obj)
 {
     return Ads1263_sendCmd(obj, ADS1263_CMD_START1);
