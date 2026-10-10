@@ -36,7 +36,7 @@ menu "FieldLink BLE proxy"
     config FIELDLINK_DAQ_CLIENT_TX_BUF
         int "Per-client TX buffer (bytes)"
         range 2048 262144
-        default 16384
+        default 65536
         help
             Bytes queued for a client that is not reading fast enough.
             When exceeded, the client is disconnected ("slow client"),
@@ -68,6 +68,52 @@ menu "FieldLink BLE proxy"
             Moving average over the last N median-filter outputs of each
             advertised channel, applied after the median filter. 1
             disables it.
+
+    config FIELDLINK_DAQ_ARCHIVE_KB
+        int "Backlog ring size in PSRAM (KiB, 0 = no backlog replay)"
+        range 0 30720
+        default 16384
+        help
+            Recent records kept in memory for ARCHIVE_INFO / READ_BACKLOG,
+            so the collector can replay what it missed while the network
+            or server was down. About 30 bytes per record with 3
+            channels: 16 MiB holds roughly 90 minutes at 104 Hz. Lost on
+            reboot.
+
+    menu "Anomaly detection (short/long-term RMS)"
+
+        config FIELDLINK_ANOMALY_SHORT_TAU_MS
+            int "Short-term IIR time constant (ms)"
+            range 10 60000
+            default 1000
+
+        config FIELDLINK_ANOMALY_LONG_TAU_S
+            int "Long-term IIR time constant (s)"
+            range 1 3600
+            default 60
+            help
+                Also the DC-removal time constant and the warm-up time
+                before any verdict.
+
+        config FIELDLINK_ANOMALY_WARN_RATIO_X100
+            int "Warning when short/long RMS ratio reaches (x100)"
+            range 101 10000
+            default 200
+
+        config FIELDLINK_ANOMALY_ALARM_RATIO_X100
+            int "Alarm when short/long RMS ratio reaches (x100)"
+            range 101 10000
+            default 400
+
+        config FIELDLINK_ANOMALY_RMS_FLOOR_UV
+            int "Long-term RMS floor (uV)"
+            range 0 1000000
+            default 2000
+            help
+                The long-term RMS is never taken as smaller than this,
+                so a very quiet sensor does not alarm on noise.
+
+    endmenu
 
     config FIELDLINK_DAQ_HOSTNAME_PREFIX
         string "Hostname prefix reported in discovery"

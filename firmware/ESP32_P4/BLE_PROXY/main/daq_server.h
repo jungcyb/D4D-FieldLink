@@ -3,8 +3,9 @@
  * collector treats this proxy like an AM6442 board: UDP discovery,
  * TCP control, and LIVE_DATA / LIVE_DATA_V2 streaming.
  *
- * There is no local storage: ARCHIVE_INFO reports an empty archive and
- * READ_BACKLOG returns no records.
+ * Recent records are kept in an in-memory (PSRAM) ring for ARCHIVE_INFO
+ * and READ_BACKLOG replay, so the collector can fill gaps after a
+ * network or server outage. The ring does not survive a reboot.
  */
 
 #pragma once

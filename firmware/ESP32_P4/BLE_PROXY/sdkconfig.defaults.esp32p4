@@ -14,3 +14,8 @@ CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
 
 # ESP-Hosted recommends a 1 ms tick to avoid SDIO bus jitter.
 CONFIG_FREERTOS_HZ=1000
+
+# In-package PSRAM holds the backlog ring (FIELDLINK_DAQ_ARCHIVE_KB). Boot
+# without it rather than failing; backlog replay is then disabled.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y

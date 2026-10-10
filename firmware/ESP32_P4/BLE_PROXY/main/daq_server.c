@@ -25,6 +25,7 @@
 #include "esp_mac.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -33,6 +34,8 @@
 #include "nvs.h"
 #include "sdkconfig.h"
 
+#include "anomaly.h"
+#include "archive.h"
 #include "ble_uart.h"
 #include "daq_server.h"
 #include "eth.h"
@@ -71,13 +74,13 @@
 #define MSG_STREAM_START_V2 0x000b
 #define MSG_SET_RATE_GROUP  0x000c
 #define MSG_LIVE_DATA       0x0100
+#define MSG_ARCHIVE_DATA    0x0101
+#define MSG_ARCHIVE_DATA_V2 0x0102
 #define MSG_LIVE_DATA_V2    0x0103
 #define MSG_RESPONSE        0x8000
 #define MSG_ERROR           0xffff
 
-#define ARCHIVE_EMPTY_JSON \
-    "{\"earliest_record_id\":null,\"latest_record_id\":null,\"segments\":0," \
-    "\"stored_bytes\":0,\"free_bytes\":0,\"reserve_bytes\":0}"
+#define MAX_BACKLOG_PAGE    2000  /* same page cap as the AM6442 daemon */
 
 typedef struct {
     uint64_t unix_ns;
@@ -92,6 +95,18 @@ typedef struct {
     size_t rx_len;
     uint8_t *tx;
     size_t tx_len;
+    /* READ_BACKLOG in progress: records are queued as the TX buffer
+     * drains, then the completion response is sent. */
+    bool backlog;
+    uint16_t backlog_type;
+    uint32_t backlog_request_id;
+    uint64_t backlog_after;
+    uint64_t backlog_next;
+    uint64_t backlog_end;
+    uint64_t backlog_last;
+    uint32_t backlog_returned;
+    bool backlog_had_records;
+    uint64_t backlog_earliest;
 } client_t;
 
 typedef struct {
@@ -252,6 +267,45 @@ static void jb_channel_caps(jbuf_t *b, bool compact)
     jb_printf(b, "]}");
 }
 
+/* Same fields as RecordRing.info() in ads8688d.py; the ring is a single
+ * in-memory "segment". */
+static void jb_archive_info(jbuf_t *b)
+{
+    archive_info_t a;
+    archive_get_info(&a);
+    if (a.count) {
+        jb_printf(b, "{\"earliest_record_id\":%" PRIu64 ",\"latest_record_id\":%" PRIu64
+                     ",\"segments\":1", a.earliest, a.latest);
+    } else {
+        jb_printf(b, "{\"earliest_record_id\":null,\"latest_record_id\":null,\"segments\":0");
+    }
+    jb_printf(b, ",\"stored_bytes\":%u,\"free_bytes\":%u,\"reserve_bytes\":0,"
+                 "\"storage\":\"memory\",\"capacity_records\":%" PRIu32 "}",
+              (unsigned)(a.count * a.record_bytes),
+              (unsigned)((a.capacity - a.count) * a.record_bytes), a.capacity);
+}
+
+static void jb_anomaly(jbuf_t *b)
+{
+    anomaly_config_t cfg;
+    anomaly_get_config(&cfg);
+    jb_printf(b, "{\"method\":\"rms_sta_lta\",\"state\":\"%s\",\"short_tau_s\":%.3f,"
+                 "\"long_tau_s\":%.1f,\"warn_ratio\":%.2f,\"alarm_ratio\":%.2f,"
+                 "\"rms_floor_v\":%.6f,\"channels\":[",
+              anomaly_state_name(anomaly_overall()), cfg.short_tau_s, cfg.long_tau_s,
+              cfg.warn_ratio, cfg.alarm_ratio, cfg.rms_floor_v);
+    for (unsigned ch = 0; ch < anomaly_channels(); ch++) {
+        anomaly_channel_t a;
+        anomaly_get_channel(ch, &a);
+        jb_printf(b, "%s{\"id\":\"CH%u\",\"state\":\"%s\",\"rms_short_v\":%.6f,"
+                     "\"rms_long_v\":%.6f,\"ratio\":%.3f,\"changed_unix_ms\":%" PRIu64
+                     ",\"events\":%" PRIu32 "}",
+                  ch ? "," : "", ch, anomaly_state_name(a.state), a.rms_short_v,
+                  a.rms_long_v, a.ratio, a.changed_unix_ms, a.events);
+    }
+    jb_printf(b, "]}");
+}
+
 /* ----- client I/O ----------------------------------------------------- */
 
 static void client_close(client_t *c, const char *reason)
@@ -265,6 +319,7 @@ static void client_close(client_t *c, const char *reason)
     c->streaming = 0;
     c->rx_len = 0;
     c->tx_len = 0;
+    c->backlog = false;
 }
 
 static void client_send(client_t *c, uint16_t type, uint32_t request_id,
@@ -318,6 +373,71 @@ static void respond_json(client_t *c, uint16_t type, uint32_t request_id,
     client_send(c, type | MSG_RESPONSE, request_id, b->buf, b->len);
 }
 
+/* ----- backlog replay ------------------------------------------------- */
+
+static bool archive_capacity_ok(void)
+{
+    archive_info_t a;
+    archive_get_info(&a);
+    return a.enabled;
+}
+
+/* Queue backlog records while at most half the TX buffer is used (the
+ * rest is headroom for live frames), and send the completion response
+ * once the page is done. */
+static void backlog_pump(client_t *c)
+{
+    if (c->fd < 0 || !c->backlog) {
+        return;
+    }
+    bool v2 = c->backlog_type == MSG_READ_BACKLOG_V2;
+    size_t prefix = v2 ? 16 : 8;
+    uint8_t msg[16 + FRAME_SIZE];
+
+    while (c->backlog_next <= c->backlog_end &&
+           c->tx_len + NET_HEADER_SIZE + prefix + FRAME_SIZE <= CONFIG_FIELDLINK_DAQ_CLIENT_TX_BUF / 2) {
+        uint64_t unix_ns;
+        Ads8688StreamFrame f;
+        if (!archive_read(c->backlog_next, &unix_ns, &f)) {
+            /* Overwritten while paging: skip to the oldest record left. */
+            archive_info_t a;
+            archive_get_info(&a);
+            if (a.count && c->backlog_next < a.earliest) {
+                c->backlog_next = a.earliest;
+                continue;
+            }
+            c->backlog_end = c->backlog_next - 1;
+            break;
+        }
+        put_be64(msg, c->backlog_next);
+        if (v2) {
+            put_be64(msg + 8, unix_ns);
+        }
+        memcpy(msg + prefix, &f, FRAME_SIZE);
+        client_send(c, v2 ? MSG_ARCHIVE_DATA_V2 : MSG_ARCHIVE_DATA, c->backlog_request_id,
+                    msg, prefix + FRAME_SIZE);
+        c->backlog_last = c->backlog_next++;
+        c->backlog_returned++;
+    }
+    if (c->fd < 0 || c->backlog_next <= c->backlog_end) {
+        return;
+    }
+
+    archive_info_t a;
+    archive_get_info(&a);
+    jbuf_t b = {.buf = s_json, .cap = sizeof(s_json)};
+    jb_printf(&b, "{\"returned\":%" PRIu32 ",\"last_record_id\":%" PRIu64 ",\"latest_record_id\":",
+              c->backlog_returned, c->backlog_last);
+    jb_printf(&b, a.count ? "%" PRIu64 : "null", a.latest);
+    jb_printf(&b, ",\"more\":%s,\"earliest_record_id\":",
+              a.count && c->backlog_last < a.latest ? "true" : "false");
+    jb_printf(&b, c->backlog_had_records ? "%" PRIu64 : "null", c->backlog_earliest);
+    jb_printf(&b, ",\"truncated\":%s}",
+              c->backlog_had_records && c->backlog_after + 1 < c->backlog_earliest ? "true" : "false");
+    c->backlog = false;
+    respond_json(c, c->backlog_type, c->backlog_request_id, &b);
+}
+
 /* ----- commands ------------------------------------------------------- */
 
 static void handle_command(client_t *c, uint16_t type, uint32_t request_id,
@@ -328,9 +448,10 @@ static void handle_command(client_t *c, uint16_t type, uint32_t request_id,
     switch (type) {
     case MSG_HELLO:
         jb_printf(&b, "{\"protocol_version\":%d,\"uuid\":\"%s\",\"model\":\"" MODEL
-                      "\",\"capabilities\":[\"live_stream\"%s],"
+                      "\",\"capabilities\":[\"live_stream\"%s%s],"
                       "\"channel_capabilities\":",
                   PROTOCOL_VERSION, s_uuid_str,
+                  archive_capacity_ok() ? ",\"local_ring\",\"backlog_replay\"" : "",
                   eth_time_is_valid() ? ",\"timestamped_stream\"" : "");
         jb_channel_caps(&b, false);
         jb_printf(&b, "}");
@@ -352,12 +473,15 @@ static void handle_command(client_t *c, uint16_t type, uint32_t request_id,
         jb_channel_caps(&b, false);
         jb_printf(&b, ",\"frames_total\":%" PRIu32 ",\"invalid_total\":%" PRIu32
                       ",\"sequence_gaps_total\":%" PRIu32 ",\"dropped_total\":%" PRIu32
-                      ",\"uptime_seconds\":%.3f,\"archive\":" ARCHIVE_EMPTY_JSON
-                      ",\"ble\":{\"connected\":%s,\"rx_bytes\":%" PRIu32
+                      ",\"uptime_seconds\":%.3f,\"archive\":",
+                  s_frames_total, link.crc_failures, s_gaps_total,
+                  s_dropped_total, now_us / 1e6);
+        jb_archive_info(&b);
+        jb_printf(&b, ",\"anomaly\":");
+        jb_anomaly(&b);
+        jb_printf(&b, ",\"ble\":{\"connected\":%s,\"rx_bytes\":%" PRIu32
                       ",\"skipped_bytes\":%" PRIu32 ",\"lost_frames\":%" PRIu32
                       ",\"rx_overflow_bytes\":%" PRIu32 "}",
-                  s_frames_total, link.crc_failures, s_gaps_total,
-                  s_dropped_total, now_us / 1e6,
                   ble_uart_is_connected() ? "true" : "false",
                   link.rx_bytes, link.skipped_bytes, link.lost_frames, link.rx_overflow);
         jb_printf(&b, ",\"sensor\":{\"state\":\"%s\",\"level\":\"%c\",\"name\":",
@@ -399,23 +523,41 @@ static void handle_command(client_t *c, uint16_t type, uint32_t request_id,
         break;
 
     case MSG_ARCHIVE_INFO:
-        jb_printf(&b, ARCHIVE_EMPTY_JSON);
+        jb_archive_info(&b);
         respond_json(c, type, request_id, &b);
         break;
 
     case MSG_READ_BACKLOG:
-    case MSG_READ_BACKLOG_V2:
+    case MSG_READ_BACKLOG_V2: {
         if (len != 12) {
             respond_error(c, request_id, "READ_BACKLOG payload must be uint64,uint32");
             break;
         }
-        /* No local storage: report an empty, non-truncated page. */
-        jb_printf(&b, "{\"returned\":0,\"last_record_id\":%" PRIu64
-                      ",\"latest_record_id\":null,\"more\":false,"
-                      "\"earliest_record_id\":null,\"truncated\":false}",
-                  get_be64(payload));
-        respond_json(c, type, request_id, &b);
+        if (c->backlog) {
+            respond_error(c, request_id, "READ_BACKLOG already in progress");
+            break;
+        }
+        archive_info_t a;
+        archive_get_info(&a);
+        uint64_t after = get_be64(payload);
+        uint32_t limit = MIN(get_be32(payload + 8), MAX_BACKLOG_PAGE);
+        /* Like RecordRing.read_after(): the next `limit` records after
+         * `after`, starting at the oldest one still kept. */
+        uint64_t next = a.count ? MAX(after + 1, a.earliest) : after + 1;
+        c->backlog = true;
+        c->backlog_type = type;
+        c->backlog_request_id = request_id;
+        c->backlog_after = after;
+        c->backlog_next = next;
+        c->backlog_end = a.count && limit && next <= a.latest ? MIN(next + limit - 1, a.latest)
+                                                             : next - 1;
+        c->backlog_last = after;
+        c->backlog_returned = 0;
+        c->backlog_had_records = a.count > 0;
+        c->backlog_earliest = a.earliest;
+        backlog_pump(c);
         break;
+    }
 
     case MSG_ACQ_START:
     case MSG_ACQ_STOP:
@@ -509,6 +651,7 @@ static void accept_client(void)
     c->streaming = 0;
     c->rx_len = 0;
     c->tx_len = 0;
+    c->backlog = false;
     strlcpy(c->addr, ip, sizeof(c->addr));
     ESP_LOGI(TAG, "client connected: %s:%u", ip, ntohs(addr.sin_port));
 }
@@ -645,7 +788,11 @@ static void drain_live_queue(void)
         if (!s_have_sequence || f->sequence <= s_last_sequence ||
             f->scanRateHz != s_scan_rate) {
             filter_reset();
+            anomaly_reset();
         }
+        /* Anomaly detection sees the raw samples: the filters below
+         * would hide the vibration energy it measures. */
+        anomaly_update(f, item.unix_ns / 1000000ULL);
         filter_frame(f);
 
         if (s_have_sequence && f->sequence != s_last_sequence + 1) {
@@ -658,6 +805,7 @@ static void drain_live_queue(void)
 
         uint64_t record_id = s_next_record_id++;
         s_frames_total++;
+        archive_append(record_id, item.unix_ns, f);
 
         put_be64(v1, record_id);
         memcpy(v1 + 8, f, FRAME_SIZE);
@@ -746,6 +894,7 @@ static void server_task(void *arg)
          * per client. */
         drain_live_queue();
         for (size_t i = 0; i < CONFIG_FIELDLINK_DAQ_MAX_CLIENTS; i++) {
+            backlog_pump(&s_clients[i]);
             client_flush(&s_clients[i]);
         }
     }
@@ -838,6 +987,29 @@ esp_err_t daq_server_start(void)
 
     s_live_queue = xQueueCreate(LIVE_QUEUE_LEN, sizeof(live_item_t));
     ESP_RETURN_ON_FALSE(s_live_queue, ESP_ERR_NO_MEM, TAG, "live queue");
+
+    size_t ring_bytes = (size_t)CONFIG_FIELDLINK_DAQ_ARCHIVE_KB * 1024;
+    void *ring = ring_bytes ? heap_caps_malloc(ring_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+    if (ring_bytes && !ring) {
+        ESP_LOGW(TAG, "no %u KiB of PSRAM for the backlog ring; backlog replay disabled",
+                 (unsigned)CONFIG_FIELDLINK_DAQ_ARCHIVE_KB);
+    }
+    archive_init(ring, ring ? ring_bytes : 0, EXPOSED_CHANNELS);
+    if (ring) {
+        archive_info_t a;
+        archive_get_info(&a);
+        ESP_LOGI(TAG, "backlog ring: %" PRIu32 " records (%u min at 100 Hz)", a.capacity,
+                 (unsigned)(a.capacity / 100 / 60));
+    }
+
+    anomaly_config_t anomaly_cfg = {
+        .short_tau_s = CONFIG_FIELDLINK_ANOMALY_SHORT_TAU_MS / 1000.0f,
+        .long_tau_s = CONFIG_FIELDLINK_ANOMALY_LONG_TAU_S,
+        .warn_ratio = CONFIG_FIELDLINK_ANOMALY_WARN_RATIO_X100 / 100.0f,
+        .alarm_ratio = CONFIG_FIELDLINK_ANOMALY_ALARM_RATIO_X100 / 100.0f,
+        .rms_floor_v = CONFIG_FIELDLINK_ANOMALY_RMS_FLOOR_UV / 1e6f,
+    };
+    anomaly_init(&anomaly_cfg, EXPOSED_CHANNELS);
 
     s_listen_fd = open_socket(SOCK_STREAM, CONFIG_FIELDLINK_DAQ_TCP_PORT);
     s_udp_fd = open_socket(SOCK_DGRAM, CONFIG_FIELDLINK_DAQ_DISCOVERY_PORT);

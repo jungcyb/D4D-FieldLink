@@ -23,3 +23,7 @@ CONFIG_BT_NIMBLE_NVS_PERSIST=y
 
 # Advertised as FieldLink-XXXX (scan response) / FL-XXXX (primary).
 CONFIG_BLE_UART_DEVICE_NAME_PREFIX="FieldLink"
+
+# Backlog replay pushes up to 2000 records per page; the default 4-MSS
+# send buffer caps it at one buffer per Wi-Fi round trip (~90 KB/s).
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
