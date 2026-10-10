@@ -91,15 +91,48 @@ static int32_t App_readScan(Ads8688 *device, Ads8688StreamFrame *frame)
     return status;
 }
 
+static uint32_t App_batchTarget(uint32_t scanRateHz)
+{
+    /* Keep transport overhead low while bounding acquisition latency to 5 ms. */
+    uint32_t target = scanRateHz / 200U;
+
+    if (target < 1U)
+    {
+        target = 1U;
+    }
+    if (target > ADS8688_STREAM_BATCH_MAX)
+    {
+        target = ADS8688_STREAM_BATCH_MAX;
+    }
+    return target;
+}
+
+static int32_t App_sendBatch(Ads8688StreamFrame *frames, uint32_t count)
+{
+    if (count == 0U)
+    {
+        return SystemP_SUCCESS;
+    }
+    return RPMessage_send(frames,
+                          (uint16_t)(count * sizeof(*frames)),
+                          CSL_CORE_ID_R5FSS0_0,
+                          ADS8688_M4_R5_ENDPOINT,
+                          ADS8688_M4_R5_ENDPOINT,
+                          SystemP_WAIT_FOREVER);
+}
+
 int main(void)
 {
     Ads8688 device;
     Ads8688StreamFrame frame;
+    Ads8688StreamFrame batch[ADS8688_STREAM_BATCH_MAX];
     RPMessage_CreateParams createParams;
     uint32_t resetGpioBase;
     uint64_t nextScanUs;
     uint64_t nowUs;
     uint32_t scanRateHz = ADS8688_STREAM_SCAN_RATE_HZ;
+    uint32_t batchCount = 0U;
+    uint32_t batchTarget = App_batchTarget(ADS8688_STREAM_SCAN_RATE_HZ);
     uint8_t acquisitionEnabled = 1U;
     int32_t status;
 
@@ -165,6 +198,10 @@ int main(void)
             Ads8688Control response;
             uintptr_t interruptState;
 
+            status = App_sendBatch(batch, batchCount);
+            DebugP_assert(status == SystemP_SUCCESS);
+            batchCount = 0U;
+
             interruptState = HwiP_disable();
             memcpy(&response, &gPendingControl, sizeof(response));
             gControlPending = 0U;
@@ -185,6 +222,7 @@ int main(void)
                     {
                         scanRateHz = response.value;
                         frame.scanRateHz = scanRateHz;
+                        batchTarget = App_batchTarget(scanRateHz);
                     }
                     else
                     {
@@ -222,11 +260,13 @@ int main(void)
             frame.timestampUs = ClockP_getTimeUsec();
             frame.crc32 = Ads8688Stream_crc32(&frame,
                 offsetof(Ads8688StreamFrame, crc32));
-            status = RPMessage_send(&frame, sizeof(frame),
-                                    CSL_CORE_ID_R5FSS0_0,
-                                    ADS8688_M4_R5_ENDPOINT,
-                                    ADS8688_M4_R5_ENDPOINT,
-                                    SystemP_WAIT_FOREVER);
+            memcpy(&batch[batchCount], &frame, sizeof(frame));
+            batchCount++;
+            if (batchCount >= batchTarget)
+            {
+                status = App_sendBatch(batch, batchCount);
+                batchCount = 0U;
+            }
             frame.sequence++;
             if ((frame.sequence % 1000U) == 0U)
             {

@@ -14,7 +14,7 @@ import time
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
 
-from .model import envelope, limits, validate_rate, visible_rows
+from .model import channel_window, envelope, limits, validate_rate, visible_rows
 
 # Fluent-inspired light surfaces; these are pygame controls, not native WinUI.
 BG = (243, 243, 243)
@@ -305,7 +305,7 @@ class Console:
 
     def plot(self, rect, rows, channel, state, color):
         index = self.wire_index(channel)
-        rows = [row for row in rows if index is not None and row.contains(index)]
+        rows, end_ns = channel_window(rows, index, self.seconds, self.offset) if index is not None else ([], None)
         pygame.draw.rect(self.screen, PANEL, rect, border_radius=6)
         pygame.draw.rect(self.screen, color if self.channel == index else EDGE, rect, 1, border_radius=8)
         channel_id = channel["id"]
@@ -332,7 +332,6 @@ class Console:
         display_rows = envelope(rows, index, area.w)
         values = [row.value(index) for row in display_rows]
         low, high = limits(values, self.auto, 2.0 if unit == "g" else 10.24)
-        end = self.plot_end
         ticks = 2 if compact else 4
         for tick in range(ticks+1):
             y = area.y + area.h*tick/ticks
@@ -357,7 +356,7 @@ class Console:
                 stroke()
                 points = []
                 segment = row.segment
-            x = area.right + (row.time_ns/1e9-end) * area.w/self.seconds
+            x = area.right + (row.time_ns-end_ns) * area.w/(self.seconds*1_000_000_000)
             y = area.bottom - (value-low)/(high-low)*area.h
             points.append((x, y))
         stroke()
@@ -366,13 +365,13 @@ class Console:
             self.text(f"MIN {min(values):+.5f}    MAX {max(values):+.5f}    Δ {max(values)-min(values):.5f} {unit}", rect.x+14, rect.bottom-21, 12, MUTED, rect.w-24)
         mouse = pygame.mouse.get_pos()
         if area.collidepoint(mouse):
-            target = (end + (mouse[0]-area.right)*self.seconds/area.w)*1e9
+            target = end_ns + round((mouse[0]-area.right)*self.seconds*1_000_000_000/area.w)
             times = [row.time_ns for row in rows]
             pos = min(len(rows)-1, bisect_left(times, target))
             if pos and abs(times[pos-1]-target) < abs(times[pos]-target):
                 pos -= 1
             row = rows[pos]
-            x = area.right + (row.time_ns/1e9-end)*area.w/self.seconds
+            x = area.right + (row.time_ns-end_ns)*area.w/(self.seconds*1_000_000_000)
             pygame.draw.line(self.screen, MUTED, (x, area.top), (x, area.bottom))
             self.hover = f"{channel_id}  index {pos:,}  record {row.record}  seq {row.sequence}  raw {row.raw(index)}  {row.value(index):+.7f} {unit}"
 
@@ -426,7 +425,6 @@ class Console:
             self.button("Y 자동" if self.auto else "Y 전체 범위", (x+325, 233, 108, 34), lambda: setattr(self, "auto", not self.auto), active=self.auto)
             self.button("전체 채널 보기" if self.detail else "선택 채널 확대", (x+443, 233, 128, 34), lambda: setattr(self, "detail", not self.detail))
             all_rows = self.frozen if self.paused else state["rows"]
-            self.plot_end = max((row.time_ns for row in all_rows), default=0)/1e9-self.offset
             shown = visible_rows(all_rows, self.seconds, self.offset)
             self.button("CSV 저장 중…" if self.exporting else "표시 구간 CSV", (x+581, 233, 130, 34), lambda: self.export(state, list(shown)), enabled=bool(shown) and not self.exporting)
             self.button("?", (width-60, 233, 36, 34), lambda: self.open_modal("help"))
@@ -460,7 +458,7 @@ class Console:
             if supported:
                 if self.detail:
                     selected = next((c for c in supported if self.wire_index(c) == self.channel), supported[0])
-                    self.plot(pygame.Rect(x, 371, w, plot_bottom-371), shown, selected, state, COLORS[self.wire_index(selected)])
+                    self.plot(pygame.Rect(x, 371, w, plot_bottom-371), all_rows, selected, state, COLORS[self.wire_index(selected)])
                 else:
                     columns = 4 if len(supported) > 4 else 2
                     nrows = (len(supported)+columns-1)//columns
@@ -468,7 +466,7 @@ class Console:
                     for i, channel in enumerate(supported):
                         pw = (w-(columns-1)*8)//columns
                         rect = pygame.Rect(x+(i%columns)*(pw+8), 371+(i//columns)*(ph+8), pw, ph)
-                        self.plot(rect, shown, channel, state, COLORS[self.wire_index(channel)])
+                        self.plot(rect, all_rows, channel, state, COLORS[self.wire_index(channel)])
             else:
                 self.text("이 장치는 현재 ADS8 라이브 전송 채널을 제공하지 않습니다.", x+20, 420, 18, MUTED)
             self.text(self.hover or "호버: 원본 인덱스·값  /  더블클릭: 채널 확대  /  휠·+/−: 시간 확대  /  ← →: 정지 구간 이동", x, height-144, 12, GREEN if self.hover else MUTED, w)

@@ -25,6 +25,7 @@ class Sample:
     codes: tuple[int, ...]
     segment: int = 0
     source: str = "ads8688"
+    plot_ns: int | None = None
 
     @property
     def channel_offset(self) -> int:
@@ -32,6 +33,8 @@ class Sample:
 
     @property
     def time_ns(self) -> int:
+        if self.plot_ns is not None:
+            return self.plot_ns
         return self.unix_ns if self.unix_ns is not None else self.device_us * 1000
 
     def contains(self, channel: int) -> bool:
@@ -85,6 +88,7 @@ class History:
         self.break_pending = False
         self._previous: dict[str, Sample] = {}
         self._segments: dict[str, int] = {}
+        self._clock_offsets: dict[str, int] = {}
 
     def append(self, sample: Sample) -> bool:
         self._segments.setdefault(sample.source, 0)
@@ -102,13 +106,20 @@ class History:
                                   maxlen=self.rows.maxlen)
                 self.restarts += 1
                 self._segments[sample.source] = self._segments.get(sample.source, 0) + 1
+                self._clock_offsets.pop(sample.source, None)
             elif delta != 1 or sample.rate != previous.rate:
                 self._segments[sample.source] = self._segments.get(sample.source, 0) + 1
                 if 1 < delta < 0x80000000:
                     self.gaps += delta - 1
         self.segment = max(self.segment, self._segments.get(sample.source, 0))
+        if sample.unix_ns is not None:
+            self._clock_offsets.setdefault(sample.source, sample.unix_ns - sample.device_us * 1000)
+            plot_ns = sample.device_us * 1000 + self._clock_offsets[sample.source]
+        else:
+            plot_ns = sample.device_us * 1000
         sample = Sample(sample.record, sample.unix_ns, sample.sequence, sample.device_us,
-                        sample.rate, sample.codes, self._segments.get(sample.source, 0), sample.source)
+                        sample.rate, sample.codes, self._segments.get(sample.source, 0),
+                        sample.source, plot_ns)
         self.rows.append(sample)
         self._previous[sample.source] = sample
         self.total += 1
@@ -125,9 +136,22 @@ class History:
 def visible_rows(rows: list[Sample], seconds: float, offset: float = 0) -> list[Sample]:
     if not rows:
         return []
-    end = max(row.time_ns for row in rows) - offset * 1e9
-    start = end - seconds * 1e9
+    # Stay in integer nanoseconds: converting an epoch-sized timestamp to float
+    # can round the newest boundary sample out of the visible window.
+    end = max(row.time_ns for row in rows) - round(offset * 1_000_000_000)
+    start = end - round(seconds * 1_000_000_000)
     return [row for row in rows if start <= row.time_ns <= end]
+
+
+def channel_window(rows: list[Sample], channel: int, seconds: float,
+                   offset: float = 0) -> tuple[list[Sample], int | None]:
+    """Return one channel's window and its source-local right edge."""
+    channel_rows = [row for row in rows if row.contains(channel)]
+    if not channel_rows:
+        return [], None
+    end = max(row.time_ns for row in channel_rows) - round(offset * 1_000_000_000)
+    start = end - round(seconds * 1_000_000_000)
+    return [row for row in channel_rows if start <= row.time_ns <= end], end
 
 
 def envelope(rows: list[Sample], channel: int, pixels: int) -> list[Sample]:

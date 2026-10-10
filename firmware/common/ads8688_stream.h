@@ -11,6 +11,7 @@
 #define ADS8688_STREAM_SCAN_RATE_HZ   (1000U)
 #define ADS8688_SCAN_RATE_MIN_HZ      (10U)
 #define ADS8688_SCAN_RATE_MAX_HZ      (2000U)
+#define ADS8688_STREAM_BATCH_MAX      (2U) /* 2 * 48 B fits the 112 B RPMsg payload. */
 
 #define ADS8688_CONTROL_MAGIC         (0x384C5443U) /* "CTL8" */
 #define ADS8688_CONTROL_VERSION       (1U)

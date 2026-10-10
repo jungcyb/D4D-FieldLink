@@ -256,6 +256,7 @@ ifeq ($(SYSTEM_FLAG), false)
 syscfg: ../example.syscfg
 	@echo Generating SysConfig files ...
 	$(SYSCFG_NODE) $(SYSCFG_CLI_PATH)/dist/cli.js --product $(SYSCFG_SDKPRODUCT) --context r5fss0-0 --part Default --package ALV --output generated/ ../example.syscfg
+	@$(SYSCFG_NODE) ../fix_syscfg.mjs
 endif
 
 syscfg-gui:

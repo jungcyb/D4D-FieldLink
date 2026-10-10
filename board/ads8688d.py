@@ -337,25 +337,38 @@ class SegmentRing:
         self.last_sync = time.monotonic()
 
     def append(self, frame: bytes) -> tuple[int, int]:
-        fields = FRAME.unpack(frame)
-        sequence = fields[3]
-        scan_rate = fields[5]
-        if self.current is None:
-            self._open(sequence, scan_rate)
-        elif self.current.tell() + RECORD.size > self.segment_bytes:
-            self.rotate()
-            self._open(sequence, scan_rate)
+        return self.append_many((frame,))[0]
 
-        record_id = self.next_record_id
-        received_ns = time.time_ns()
-        self.current.write(RECORD.pack(record_id, received_ns, frame))
+    def append_many(self, frames) -> list[tuple[int, int]]:
+        """Persist one RPMsg batch with one filesystem write per segment."""
+        frames = list(frames)
+        records = []
+        offset = 0
+        while offset < len(frames):
+            fields = FRAME.unpack(frames[offset])
+            if self.current is None:
+                self._open(fields[3], fields[5])
+            available = (self.segment_bytes - self.current.tell()) // RECORD.size
+            if available == 0:
+                self.rotate()
+                continue
+            chunk = frames[offset:offset + available]
+            data = bytearray()
+            for frame in chunk:
+                record_id = self.next_record_id
+                received_ns = time.time_ns()
+                data.extend(RECORD.pack(record_id, received_ns, frame))
+                records.append((record_id, received_ns))
+                self.next_record_id += 1
+            self.current.write(data)
+            offset += len(chunk)
+
         now = time.monotonic()
         if now - self.last_sync >= 1.0:
             self.current.flush()
             os.fsync(self.current.fileno())
             self.last_sync = now
-        self.next_record_id += 1
-        return record_id, received_ns
+        return records
 
     def rotate(self) -> None:
         if self.current is None or self.current_path is None:
@@ -401,6 +414,17 @@ class SegmentRing:
             "free_bytes": usage.free,
             "reserve_bytes": max(self.reserve_bytes, usage.total // 10),
         }
+
+    def record_bounds(self) -> tuple[int | None, int | None]:
+        """Cheap bounds for paged replay; avoids rescanning every segment."""
+        earliest = None
+        for path in self._paths():
+            bounds = self._bounds(path)
+            if bounds is not None:
+                earliest = bounds[0]
+                break
+        latest = self.next_record_id - 1 if self.next_record_id > 1 else None
+        return earliest, latest
 
     def read_after(self, after_record_id: int, limit: int):
         if self.current is not None:
@@ -450,7 +474,7 @@ class Server:
         )
         self.selector = selectors.DefaultSelector()
         self.clients: dict[socket.socket, Client] = {}
-        self.pending: dict[int, tuple[socket.socket, int, int, float]] = {}
+        self.pending: dict[int, tuple[socket.socket, int, int, float, int]] = {}
         self.control_id = 1
         self.running = True
         self.started = time.monotonic()
@@ -545,8 +569,28 @@ class Server:
             self._error(stream, request_id, f"RPMsg control failed: {error}")
             return
         self.pending[internal_id] = (
-            stream, message_type, request_id, time.monotonic()
+            stream, message_type, request_id, time.monotonic(), value
         )
+
+    def _complete_control(self, pending, value: int) -> None:
+        stream, message_type, request_id, _started, _expected = pending
+        if stream not in self.clients:
+            return
+        self._response(stream, message_type, request_id, {
+            "acquiring": self.acquiring,
+            "scan_rate_hz": self.scan_rate,
+            "channel_capabilities": channel_capabilities(self.scan_rate, self.nu40_status),
+            "nu40": self.nu40_status,
+        })
+
+    def _confirm_rate_from_frame(self, observed_rate: int) -> None:
+        """A data frame is authoritative proof that M4 applied a requested rate."""
+        for internal_id, pending in tuple(self.pending.items()):
+            _stream, message_type, _request_id, _started, expected = pending
+            if (message_type in (MSG_SET_RATE, MSG_SET_RATE_GROUP)
+                    and expected == observed_rate):
+                self.pending.pop(internal_id, None)
+                self._complete_control(pending, observed_rate)
 
     def _command(
         self, stream: socket.socket, message_type: int, request_id: int, payload: bytes
@@ -612,30 +656,30 @@ class Server:
                 self._error(stream, request_id, "READ_BACKLOG payload must be uint64,uint32")
                 return
             after_record, limit = struct.unpack("!QI", payload)
-            before = self.ring.info()
-            earliest = before["earliest_record_id"]
+            earliest, latest = self.ring.record_bounds()
             returned = 0
             last_record = after_record
+            messages = bytearray()
             for record_id, received_ns, frame in self.ring.read_after(after_record, limit):
                 last_record = record_id
                 if message_type != MSG_READ_BACKLOG_V3 and FRAME.unpack(frame)[0] == NU40_MAGIC:
                     continue
-                self._queue(
-                    stream,
+                messages.extend(
                     make_message(
                         MSG_ARCHIVE_DATA if message_type == MSG_READ_BACKLOG else MSG_ARCHIVE_DATA_V2,
                         request_id,
                         (struct.pack("!Q", record_id) if message_type == MSG_READ_BACKLOG else struct.pack("!QQ", record_id, received_ns)) + frame,
-                    ),
+                    )
                 )
                 returned += 1
                 last_record = record_id
-            info = self.ring.info()
+            if messages:
+                self._queue(stream, messages)
             self._response(stream, message_type, request_id, {
                 "returned": returned,
                 "last_record_id": last_record,
-                "latest_record_id": info["latest_record_id"],
-                "more": info["latest_record_id"] is not None and last_record < info["latest_record_id"],
+                "latest_record_id": latest,
+                "more": latest is not None and last_record < latest,
                 "earliest_record_id": earliest,
                 "truncated": earliest is not None and after_record + 1 < earliest,
             })
@@ -700,12 +744,19 @@ class Server:
     def _rpmsg_packet(self, packet: bytes) -> None:
         if packet == b"ADS8OK":
             return
+        if len(packet) >= FRAME.size and len(packet) % FRAME.size == 0:
+            self._rpmsg_frames(
+                [packet[offset:offset + FRAME.size]
+                 for offset in range(0, len(packet), FRAME.size)]
+            )
+            return
         if valid_control(packet):
             _magic, _version, command, internal_id, value, status, _crc = CONTROL.unpack(packet)
-            pending = self.pending.pop(internal_id, None)
+            pending = self.pending.get(internal_id)
             if pending is None or command & CONTROL_ACK == 0:
                 return
-            stream, message_type, request_id, _started = pending
+            self.pending.pop(internal_id, None)
+            stream, message_type, request_id, _started, _expected = pending
             if stream not in self.clients:
                 return
             if status != 0:
@@ -723,38 +774,49 @@ class Server:
                 except queue.Full:
                     self._error(stream, request_id, 'ADS8688 applied, NU40 control queue full; inspect STATUS')
                     return
-            self._response(stream, message_type, request_id, {
-                "acquiring": self.acquiring,
-                "scan_rate_hz": value,
-                "channel_capabilities": channel_capabilities(self.scan_rate, self.nu40_status),
-                "nu40": self.nu40_status,
-            })
+            self._complete_control(pending, value)
             return
-        if not valid_frame(packet):
-            self.invalid_total += 1
-            self.report_invalid += 1
-            return
+        self._rpmsg_frames([packet])
 
-        fields = FRAME.unpack(packet)
-        sequence = fields[3]
-        self.scan_rate = fields[5]
-        if self.last_sequence is not None and sequence != (self.last_sequence + 1) & 0xFFFFFFFF:
-            gap = (sequence - self.last_sequence - 1) & 0xFFFFFFFF
-            self.gaps_total += gap
-            self.report_gaps += gap
-        self.last_sequence = sequence
-        self.frames_total += 1
-        self.report_frames += 1
-        self._publish_frame(packet)
+    def _rpmsg_frames(self, frames) -> None:
+        valid = []
+        for packet in frames:
+            if not valid_frame(packet):
+                self.invalid_total += 1
+                self.report_invalid += 1
+                continue
+            fields = FRAME.unpack(packet)
+            sequence = fields[3]
+            self.scan_rate = fields[5]
+            self._confirm_rate_from_frame(self.scan_rate)
+            if self.last_sequence is not None and sequence != (self.last_sequence + 1) & 0xFFFFFFFF:
+                gap = (sequence - self.last_sequence - 1) & 0xFFFFFFFF
+                self.gaps_total += gap
+                self.report_gaps += gap
+            self.last_sequence = sequence
+            self.frames_total += 1
+            self.report_frames += 1
+            valid.append(packet)
+        if valid:
+            self._publish_frames(valid)
 
     def _publish_frame(self, packet: bytes, nu40=False):
+        self._publish_frames([packet], nu40)
+
+    def _publish_frames(self, packets, nu40=False):
         try:
-            record_id, received_ns = self.ring.append(packet)
+            records = self.ring.append_many(packets)
         except OSError as error:
             print(f"storage write failed: {error}", flush=True)
             return
-        message = make_message(MSG_LIVE_DATA, 0, struct.pack("!Q", record_id) + packet)
-        message_v2 = make_message(MSG_LIVE_DATA_V2, 0, struct.pack("!QQ", record_id, received_ns) + packet)
+        message = b"".join(
+            make_message(MSG_LIVE_DATA, 0, struct.pack("!Q", record_id) + packet)
+            for packet, (record_id, _received_ns) in zip(packets, records)
+        )
+        message_v2 = b"".join(
+            make_message(MSG_LIVE_DATA_V2, 0, struct.pack("!QQ", record_id, received_ns) + packet)
+            for packet, (record_id, received_ns) in zip(packets, records)
+        )
         for stream, client in tuple(self.clients.items()):
             if client.streaming and (not nu40 or client.streaming == 3):
                 self._queue(stream, message_v2 if client.streaming >= 2 else message)
@@ -840,7 +902,7 @@ class Server:
 
                 now = time.monotonic()
                 for internal_id, pending in tuple(self.pending.items()):
-                    stream, _message_type, request_id, started = pending
+                    stream, _message_type, request_id, started, _expected = pending
                     if now - started > 2.0:
                         self.pending.pop(internal_id)
                         self._error(stream, request_id, "MCU control timeout")

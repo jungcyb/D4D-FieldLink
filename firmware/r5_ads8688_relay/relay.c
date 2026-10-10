@@ -107,8 +107,9 @@ static void App_linuxTask(void *args)
 
 static void App_m4Task(void *args)
 {
-    uint8_t message[64] __attribute__((aligned(8)));
-    Ads8688StreamFrame *frame = (Ads8688StreamFrame *)message;
+    uint8_t message[sizeof(Ads8688StreamFrame) * ADS8688_STREAM_BATCH_MAX]
+        __attribute__((aligned(8)));
+    Ads8688StreamFrame *frames = (Ads8688StreamFrame *)message;
     Ads8688Control *control = (Ads8688Control *)message;
     uint16_t messageSize;
     uint16_t remoteCoreId;
@@ -116,6 +117,8 @@ static void App_m4Task(void *args)
     int32_t status;
     uint32_t received = 0U;
     uint32_t invalid = 0U;
+    uint32_t frameCount;
+    uint32_t i;
 
     (void)args;
     while (gShutdownRequested == 0U)
@@ -128,22 +131,42 @@ static void App_m4Task(void *args)
         {
             break;
         }
+        frameCount = messageSize / sizeof(Ads8688StreamFrame);
         if ((status == SystemP_SUCCESS) &&
-            (messageSize == sizeof(Ads8688StreamFrame)) &&
-            Ads8688Stream_isValid(frame))
+            (frameCount >= 1U) &&
+            (frameCount <= ADS8688_STREAM_BATCH_MAX) &&
+            (messageSize == frameCount * sizeof(Ads8688StreamFrame)))
         {
-            received++;
-            if (gLinuxReady != 0U)
+            for (i = 0U; i < frameCount; i++)
             {
-                (void)RPMessage_send(frame, sizeof(*frame),
-                                     gLinuxCoreId, gLinuxRemoteEndpoint,
-                                     ADS8688_LINUX_ENDPOINT,
-                                     SystemP_NO_WAIT);
+                if (!Ads8688Stream_isValid(&frames[i]))
+                {
+                    break;
+                }
             }
-            if ((received % 1000U) == 0U)
+            if (i == frameCount)
             {
-                DebugP_log("[ADS8688 R5] received=%u invalid=%u linux=%u\r\n",
-                           received, invalid, gLinuxReady);
+                received += frameCount;
+                if (gLinuxReady != 0U)
+                {
+                    status = RPMessage_send(message, messageSize,
+                                            gLinuxCoreId, gLinuxRemoteEndpoint,
+                                            ADS8688_LINUX_ENDPOINT,
+                                            SystemP_WAIT_FOREVER);
+                    if (status != SystemP_SUCCESS)
+                    {
+                        invalid += frameCount;
+                    }
+                }
+                if ((received % 1000U) < frameCount)
+                {
+                    DebugP_log("[ADS8688 R5] received=%u invalid=%u linux=%u\r\n",
+                               received, invalid, gLinuxReady);
+                }
+            }
+            else
+            {
+                invalid += frameCount;
             }
         }
         else if ((status == SystemP_SUCCESS) &&

@@ -18,7 +18,7 @@ import zlib
 
 from board.ads8688d import channel_capabilities, discovery_capabilities
 from client import ads8688_protocol as wire
-from live_console.model import FRAME, History, Sample, decode_sample, envelope, limits, validate_rate, visible_rows
+from live_console.model import FRAME, History, Sample, channel_window, decode_sample, envelope, limits, validate_rate, visible_rows
 from live_console.network import Fleet, PacketDecoder, Session, checked_control
 
 
@@ -189,6 +189,18 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(history.gaps, 0)
         self.assertEqual(history.rows[-1].segment, 0)
 
+    def test_plot_time_uses_device_clock_not_bursty_delivery_time(self):
+        history = History()
+        arrived = 1_700_000_000_000_000_000
+        for sequence, received_ns in enumerate((arrived, arrived, arrived + 20_000_000), 1):
+            sample = decode_sample(payload(sequence), True)
+            history.append(Sample(sample.record, received_ns, sample.sequence,
+                                  sample.device_us, sample.rate, sample.codes))
+        self.assertEqual(
+            [row.time_ns - history.rows[0].time_ns for row in history.rows],
+            [0, 1_000_000, 2_000_000],
+        )
+
     def test_window_envelope_limits(self):
         rows = [decode_sample(payload(i), True) for i in range(1, 1001)]
         shown = visible_rows(rows, .2, .5)
@@ -203,6 +215,26 @@ class ModelTests(unittest.TestCase):
         self.assertLessEqual(len(reduced), 402)
         self.assertEqual(limits([0], True), (-.000625, .000625))
         self.assertEqual(limits([0], False), (-10.24, 10.24))
+
+    def test_visible_window_only_moves_when_a_new_sample_arrives(self):
+        rows = [decode_sample(payload(i), True) for i in range(1, 1001)]
+        before = visible_rows(rows, .2)
+        with patch("live_console.model.time.monotonic", return_value=10_000_000):
+            self.assertEqual(visible_rows(rows, .2), before)
+        advanced = visible_rows(rows + [decode_sample(payload(1001), True)], .2)
+        self.assertGreater(advanced[-1].time_ns, before[-1].time_ns)
+
+    def test_each_source_keeps_its_newest_frame_at_the_right_edge(self):
+        ads = [Sample(i, None, i, i*1000, 1000, (i,)*8, source='ads8688') for i in range(1, 4)]
+        nu40 = [Sample(i, None, i, 10_000_000+i*9615, 104, (i,)*3, source='nu40') for i in range(1, 4)]
+        rows = [item for pair in zip(ads, nu40) for item in pair]
+
+        ads_window, ads_end = channel_window(rows, 0, 2)
+        nu40_window, nu40_end = channel_window(rows, 8, 2)
+
+        self.assertEqual(ads_window[-1].time_ns, ads_end)
+        self.assertEqual(nu40_window[-1].time_ns, nu40_end)
+        self.assertNotEqual(ads_end, nu40_end)
 
     def test_discovery_v1_v2_and_bad_nonce(self):
         identity, nonce = uuid.uuid4(), 999
@@ -365,11 +397,12 @@ class RenderTests(unittest.TestCase):
                     if artifact:
                         Path(artifact).mkdir(parents=True, exist_ok=True)
                         pygame.image.save(console.screen, str(Path(artifact)/'winui-fixture.png'))
-                    console.export(session.snapshot(), visible_rows(console.frozen, 2))
+                    exported = visible_rows(console.frozen, 2)
+                    console.export(session.snapshot(), exported)
                     until(lambda: not console.exporting)
                     with next(Path(folder).glob('*.csv')).open(encoding='utf-8-sig', newline='') as stream:
                         rows = list(csv.reader(stream))
-                    self.assertEqual(len(rows), 2001)
+                    self.assertEqual(len(rows), len(exported) + 1)
                     self.assertEqual(len(rows[0]), 29)
                     self.assertIn('CH7_V', rows[0])
                     self.assertIn('CH10_g', rows[0])
