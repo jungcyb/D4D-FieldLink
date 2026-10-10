@@ -48,7 +48,8 @@ export class MaintenanceService {
       const stored = lastReadings.get(s.id) || null;
       const last = stored ? { ...stored, value: stored.value * s.calibration.scale + s.calibration.offset } : null;
       const preview = last ? { id: last.id, sensorId: last.sensorId, timestamp: last.timestamp, value: last.value, sps: last.sps, source: last.source } : null;
-      return { ...s, equipmentId: d.equipmentId, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null, daqLabel: d.label, latest: preview, diagnosis: lastDiagnoses.get(s.id) || null, online: online(d)&&s.connected!==false };
+      const channel=d.channels?.find(c=>channelKey(c.id)===channelKey(s.channel));
+      return { ...s, equipmentId: d.equipmentId, equipmentName: store.equipment.find(e => e.id === d.equipmentId)?.name || null, daqLabel: d.label, latest: preview, diagnosis: lastDiagnoses.get(s.id) || null, online: online(d)&&s.connected!==false&&channel?.streamAvailable!==false };
     });
     const equipment = store.equipment.map(e => {
       const children = sensors.filter(s => s.equipmentId === e.id);

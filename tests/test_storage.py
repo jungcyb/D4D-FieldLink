@@ -3,7 +3,7 @@ import struct
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from collections import namedtuple
 import uuid
 import zlib
@@ -22,12 +22,23 @@ def frame(sequence: int) -> bytes:
 
 
 class SegmentRingTests(unittest.TestCase):
-    def test_dual_adc_capabilities_report_rates_and_groups(self) -> None:
+    def test_rpmsg_burst_drains_pending_packets_but_is_bounded(self):
+        server = ads8688d.Server.__new__(ads8688d.Server)
+        server.rpmsg = 123
+        server._rpmsg_packet = Mock()
+        with patch('ads8688d.os.read', side_effect=[b'one', b'two', BlockingIOError]):
+            server._rpmsg_read()
+        self.assertEqual(server._rpmsg_packet.call_count, 2)
+        with patch('ads8688d.os.read', return_value=b'busy') as reader:
+            server._rpmsg_read()
+        self.assertEqual(reader.call_count, 64)
+
+    def test_eleven_channels_report_independent_rates_and_groups(self) -> None:
         capabilities = ads8688d.channel_capabilities(1250)
-        self.assertEqual(capabilities["channelCount"], 10)
+        self.assertEqual(capabilities["channelCount"], 11)
         self.assertEqual(
             [channel["sampleRateHz"] for channel in capabilities["channels"]],
-            [1250] * 8 + [400, 10],
+            [1250] * 8 + [104] * 3,
         )
         writable = [group for group in capabilities["sampleRateGroups"]
                     if group["writable"]]

@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 
-const TYPES = { HELLO: 1, STATUS: 2, ARCHIVE_INFO: 8, READ_BACKLOG: 9, READ_BACKLOG_V2: 10, STREAM_START_V2: 11, STREAM_START: 6, LIVE_DATA: 0x100, ARCHIVE_DATA: 0x101, ARCHIVE_DATA_V2: 0x102, LIVE_DATA_V2: 0x103, ANOMALY_EVENT: 0x104, RESPONSE: 0x8000, ERROR: 0xffff };
+const TYPES = { HELLO: 1, STATUS: 2, ARCHIVE_INFO: 8, READ_BACKLOG: 9, READ_BACKLOG_V2: 10, STREAM_START_V2: 11, STREAM_START_V3: 13, READ_BACKLOG_V3: 14, STREAM_START: 6, LIVE_DATA: 0x100, ARCHIVE_DATA: 0x101, ARCHIVE_DATA_V2: 0x102, LIVE_DATA_V2: 0x103, ANOMALY_EVENT: 0x104, RESPONSE: 0x8000, ERROR: 0xffff };
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const dashboardUrl = process.env.DASHBOARD_URL || "http://127.0.0.1:3000";
 const stateDirectory = process.env.COLLECTOR_STATE_DIR || join(ROOT, "integration", "state");
@@ -23,9 +23,14 @@ export function decodeFrame(payload, timestamped = false) {
   const recordId = payload.readBigUInt64BE(0);
   const receivedNs = timestamped ? payload.readBigUInt64BE(8) : BigInt(Date.now()) * BigInt(1_000_000);
   const frame = payload.subarray(prefix);
-  if (frame.readUInt32LE(0) !== 0x38534441 || frame.readUInt16LE(4) !== 1 || frame.readUInt16LE(6) !== 28 || frame.readUInt16LE(24) !== 8 || frame.readUInt16LE(26) !== 1 || frame.readUInt32LE(44) !== crc32(frame.subarray(0, 44))) throw new Error("invalid ADS8688 frame");
+  const nu40 = frame.readUInt32LE(0) === 0x3034554e;
+  if ((!nu40 && frame.readUInt32LE(0) !== 0x38534441) || frame.readUInt16LE(4) !== 1 || frame.readUInt16LE(6) !== 28 || frame.readUInt16LE(24) !== (nu40 ? 3 : 8) || frame.readUInt16LE(26) !== (nu40 ? 2 : 1) || frame.readUInt32LE(44) !== crc32(frame.subarray(0, 44))) throw new Error("invalid DAQ frame");
   const scanRate=frame.readUInt32LE(20);if(scanRate<1||scanRate>1000000)throw new Error("invalid scan rate");
-  return { recordId, timestamp: new Date(Number(receivedNs / BigInt(1_000_000))).toISOString(), sequence: frame.readUInt32LE(8), scanRate, samples: Array.from({ length: 8 }, (_, channel) => rawCodeToVolts(frame.readUInt16LE(28 + channel * 2))) };
+  const sourceUs = frame.readBigUInt64LE(12);
+  return { recordId, source: nu40 ? 'nu40' : 'ads8688', sourceUs,
+    channelIds: Array.from({length: nu40 ? 3 : 8}, (_, i) => `CH${i + (nu40 ? 8 : 0)}`),
+    timestamp: new Date(Number(nu40 ? sourceUs / BigInt(1000) : receivedNs / BigInt(1_000_000))).toISOString(),
+    sequence: frame.readUInt32LE(8), scanRate, samples: Array.from({ length: nu40 ? 3 : 8 }, (_, channel) => nu40 ? frame.readInt16LE(28 + channel * 2) * .000061 : rawCodeToVolts(frame.readUInt16LE(28 + channel * 2))) };
 }
 
 export function recoveryGaps(plan, firstTimestamp, lastTimestamp) {
@@ -135,17 +140,28 @@ async function dashboard(path, options = {}) {
 const statePath = uuid => join(stateDirectory, `${uuid}.json`);
 async function saveCursor(uuid, recordId) { await mkdir(stateDirectory, { recursive: true }); const target = statePath(uuid), temporary = `${target}.tmp`; await writeFile(temporary, JSON.stringify({ uuid, lastRecordId: recordId.toString(), updatedAt: new Date().toISOString() })); await rename(temporary, target); }
 
-function channelIndex(channel) { const match = /^CH-?([0-7])$/i.exec(channel); return match ? Number(match[1]) : null; }
+function channelIndex(channel) { const match = /^CH-?([0-9]|10)$/i.exec(channel); return match ? Number(match[1]) : null; }
 
 export class BatchWriter {
   constructor(uuid, client, recovery = null) { this.uuid = uuid; this.client = client; this.recovery = recovery; this.recoverySequence = recovery?.nextSequence || 0; this.recoveryFirst = null; this.recoveryLast = null; this.frames = []; this.recoveryBatch = false; this.queue = Promise.resolve(); this.error = null; this.lastSaved = null; this.sensors = []; this.sensorRefresh = 0; }
   async refreshSensors() { if (Date.now() - this.sensorRefresh < 5000) return; const sensors = await dashboard("/sensors"); this.sensors = sensors.filter(sensor => sensor.daqUuid === this.uuid && channelIndex(sensor.channel) !== null); this.sensorRefresh = Date.now(); }
   add(frame) {
+    // Each source has its own sample clock and partial batch. The upload queue and
+    // recovery sequence remain shared, so interleaving cannot reorder recovery batches.
+    this.sourceBuffers ||= new Map();
+    const source = frame.source || 'ads8688';
+    const saved = this.sourceBuffers.get(source) || {frames: [], recoveryBatch: false};
+    this.frames = saved.frames; this.recoveryBatch = saved.recoveryBatch;
+    this.addToSource(frame);
+    this.sourceBuffers.set(source, {frames: this.frames, recoveryBatch: this.recoveryBatch});
+  }
+  addToSource(frame) {
     const recoveryBatch = Boolean(this.recovery?.raw && frame.timestamp >= this.recovery.from && frame.timestamp <= this.recovery.to);
     // The dashboard places a batch's last sample at first + (n-1)/sps and rejects recovery batches ending after plan.to; when the real rate runs
     // faster than the advertised SPS (ESP/BLE sensors do) that projection overshoots, so start a new batch before it would.
     const overshootsRecovery = recoveryBatch && this.recoveryBatch && Date.parse(this.frames[0]?.timestamp) + this.frames.length * 1000 / frame.scanRate > Date.parse(this.recovery.to) + 1;
-    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || overshootsRecovery || this.frames[0].scanRate !== frame.scanRate || frame.recordId !== this.frames.at(-1).recordId + BigInt(1) || this.frames.length >= Math.min(frame.scanRate,4096))) this.closeBatch();
+    const previous=this.frames.at(-1),continuous=previous&&(frame.sequence!==undefined&&previous.sequence!==undefined?frame.sequence===((previous.sequence+1)>>>0):frame.recordId===previous.recordId+BigInt(1));
+    if (this.frames.length && (this.recoveryBatch !== recoveryBatch || overshootsRecovery || this.frames[0].scanRate !== frame.scanRate || !continuous || this.frames.length >= Math.min(frame.scanRate,4096))) this.closeBatch();
     if (frame.archived && !recoveryBatch) return;
     if (!this.frames.length) this.recoveryBatch = recoveryBatch;
     this.frames.push(frame); if (this.frames.length >= Math.min(frame.scanRate,4096)) this.closeBatch();
@@ -154,9 +170,10 @@ export class BatchWriter {
     if (!this.frames.length) return; const frames = this.frames, recoveryBatch = this.recoveryBatch; this.frames = [];
     this.queue = this.queue.then(async () => {
       await this.refreshSensors(); const first = frames[0], last = frames.at(-1), readings = this.sensors.map(sensor => {
-        const index = channelIndex(sensor.channel), raw = frames.map(frame => frame.samples[index]);
+        const index = first.channelIds ? first.channelIds.indexOf(`CH${channelIndex(sensor.channel)}`) : channelIndex(sensor.channel), raw = frames.map(frame => frame.samples[index]);
+        if (index < 0 || index >= first.samples.length) return null;
         return { channel: sensor.channel, timestamp: first.timestamp, value: raw.reduce((sum, value) => sum + value, 0) / raw.length, sps: first.scanRate, raw };
-      });
+      }).filter(Boolean);
       if (readings.length && recoveryBatch) {
         const result = await dashboard(`/recoveries/${this.recovery.id}/batches`, { method: "POST", body: JSON.stringify({ sequence: this.recoverySequence, batchId: `record-${first.recordId}-${last.recordId}`, frame: { readings }, logs: [] }) });
         this.recoverySequence = result.nextSequence; this.recoveryFirst ||= first.timestamp; this.recoveryLast = last.timestamp;
@@ -167,7 +184,8 @@ export class BatchWriter {
   }
   async finishRecovery() {
     if (!this.recovery) return;
-    this.closeBatch(); await this.queue; if (this.error) throw this.error;
+    for(const saved of this.sourceBuffers?.values() || []) {this.frames=saved.frames;this.recoveryBatch=saved.recoveryBatch;this.closeBatch();}
+    this.sourceBuffers?.clear(); await this.queue; if (this.error) throw this.error;
     const missing = recoveryGaps(this.recovery, this.recoveryFirst, this.recoveryLast);
     await dashboard(`/recoveries/${this.recovery.id}/complete`, { method: "POST", body: JSON.stringify({ edgeComplete: true, rawCoveredThrough: this.recovery.to, logsCoveredThrough: this.recovery.to, finalSequence: this.recoverySequence - 1, missing }) });
     log("recovery completed", `plan=${this.recovery.id} batches=${this.recoverySequence} gaps=${missing.length}`); this.recovery = null;
@@ -190,18 +208,24 @@ const ANOMALY_LOG_LEVEL = { normal: "info", warning: "warning", alarm: "error" }
 export function anomalyEvents(anomaly, reported, sensors) {
   const sensorFor = new Map(sensors.map(sensor => [sensor.channel.toUpperCase(), sensor])), diagnoses = [], logs = [];
   for (const channel of anomaly?.channels || []) {
-    if (!ANOMALY_SEVERITY[channel.state]) continue;
+    const continuous=anomaly.unit==='g';
+    if (!ANOMALY_SEVERITY[channel.state] && !(continuous && channel.state==='warmup')) continue;
     const sensor = sensorFor.get(channel.id.toUpperCase());
     if (!reported.has(channel.id) && sensor?.diagnosis?.model === ANOMALY_MODEL) reported.set(channel.id, SEVERITY_STATE[sensor.diagnosis.severity]);
     const previous = reported.get(channel.id); reported.set(channel.id, channel.state);
-    if (previous === channel.state || (previous === undefined && channel.state === "normal")) continue;
-    const timestamp = new Date(channel.changed_unix_ms || Date.now()).toISOString(), ratio = channel.ratio.toFixed(2);
-    const description = `단기 RMS ${channel.rms_short_v.toFixed(4)} V / 장기 RMS ${channel.rms_long_v.toFixed(4)} V, 비율 ${ratio} (경고 ${anomaly.warn_ratio}·위험 ${anomaly.alarm_ratio}, 시정수 ${anomaly.short_tau_s}s/${anomaly.long_tau_s}s)`;
-    if (sensor) diagnoses.push({ channel: channel.id, timestamp, severity: ANOMALY_SEVERITY[channel.state], title: ANOMALY_TITLE[channel.state], model: ANOMALY_MODEL, description });
+    const unchanged=previous === channel.state || (previous === undefined && channel.state === "normal");
+    if (unchanged&&!continuous) continue;
+    if(!Number.isFinite(channel.ratio))continue;
+    const timestamp = new Date((continuous?anomaly.evaluated_unix_ms:channel.changed_unix_ms) || Date.now()).toISOString(), ratio = channel.ratio.toFixed(2);
+    const short=channel.rms_short??channel.rms_short_v,long=channel.rms_long??channel.rms_long_v,unit=anomaly.unit||'V';
+    if(!Number.isFinite(short)||!Number.isFinite(long))continue;
+    const description = `단기 RMS ${short.toFixed(4)} ${unit} / 장기 RMS ${long.toFixed(4)} ${unit}, 비율 ${ratio} (경고 ${anomaly.warn_ratio}·위험 ${anomaly.alarm_ratio}, 시정수 ${anomaly.short_tau_s}s/${anomaly.long_tau_s}s)`;
+    if (sensor) diagnoses.push({ channel: channel.id, timestamp, severity: ANOMALY_SEVERITY[channel.state]||'unknown', title: channel.state==='warmup'?'RMS 기준 안정화 중':continuous&&channel.state==='normal'?'RMS 정상 범위':ANOMALY_TITLE[channel.state], model: ANOMALY_MODEL, description });
+    if(unchanged||channel.state==='warmup')continue;
     logs.push({ batchId: `ad-${channel.id}-${channel.changed_unix_ms || timestamp}-${channel.state}`, log: { timestamp, level: ANOMALY_LOG_LEVEL[channel.state], code: `AD_RMS_${channel.state.toUpperCase()}`, sensorId: sensor?.id ?? null,
       message: `${channel.id}${sensor?.name ? ` (${sensor.name})` : ""} ${ANOMALY_TITLE[channel.state]}: 비율 ${ratio}`,
       metadata: { detector: anomaly.method || "rms_sta_lta", channel: channel.id, state: channel.state, previous: previous ?? null, ratio: channel.ratio, rmsShortV: channel.rms_short_v, rmsLongV: channel.rms_long_v,
-        warnRatio: anomaly.warn_ratio, alarmRatio: anomaly.alarm_ratio, shortTauS: anomaly.short_tau_s, longTauS: anomaly.long_tau_s, events: channel.events } } });
+        rmsShort:short,rmsLong:long,unit,warnRatio: anomaly.warn_ratio, alarmRatio: anomaly.alarm_ratio, shortTauS: anomaly.short_tau_s, longTauS: anomaly.long_tau_s, events: channel.events } } });
   }
   return { diagnoses, logs };
 }
@@ -238,24 +262,34 @@ async function runConnection(board) {
     const recoveryWriter = recovery ? new BatchWriter(uuid, client, recovery) : null, recoveryFrames = recoveryWriter && cursor !== null ? new OrderedFrames(recoveryWriter, cursor + BigInt(1)) : null;
     client.onFrame = frame => frame.archived ? recoveryFrames?.accept(frame) : liveFrames.accept(frame);
     // Anomaly verdicts arrive pushed (ANOMALY_EVENT, on state change) and in the 10 s STATUS fallback; report them in arrival order.
-    const anomalyStates = new Map(); let anomalyQueue = Promise.resolve();
+    const anomalyStates = new Map(); let anomalyQueue = Promise.resolve(), pendingAnomaly=null, deliveringAnomaly=false;
     async function deliverAnomaly(anomaly) {
       if (!anomaly) return;
       await liveWriter.refreshSensors();
       await reportAnomaly(uuid, anomaly, anomalyStates, liveWriter.sensors);
     }
-    const queueAnomaly = anomaly => { anomalyQueue = anomalyQueue.then(() => deliverAnomaly(anomaly)).catch(error => log("anomaly report failed", `${uuid} ${error.message}`)); };
+    const queueAnomaly = anomaly => {
+      if(!anomaly)return;
+      pendingAnomaly=anomaly;
+      if(deliveringAnomaly)return;
+      deliveringAnomaly=true;
+      anomalyQueue=(async()=>{try{while(pendingAnomaly){const next=pendingAnomaly;pendingAnomaly=null;try{await deliverAnomaly(next);}catch(error){log('anomaly report failed',`${uuid} ${error.message}`);}}}finally{deliveringAnomaly=false;}})();
+    };
     client.onAnomaly = queueAnomaly;
     queueAnomaly(status.anomaly);
     let timestamped = hello.capabilities?.includes("timestamped_stream");
-    const streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
+    const mixed=hello.capabilities?.includes('mixed_stream_v3');
+    const streamType = mixed ? TYPES.STREAM_START_V3 : timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = mixed ? TYPES.READ_BACKLOG_V3 : timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
     await client.request(streamType);
     const afterStart = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, target = afterStart?.latest_record_id == null ? BigInt(0) : BigInt(afterStart.latest_record_id);
     // Kernel keepalive takes minutes to notice a board that lost power or changed IP, so probe it with STATUS and drop the link if it stops answering.
     const heartbeat = setInterval(() => {
       void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label,ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error));
       const timeout = setTimeout(() => client.socket.destroy(new Error("board stopped answering STATUS")), Number(process.env.BOARD_STATUS_TIMEOUT_MS || 8000));
-      client.request(TYPES.STATUS).finally(() => clearTimeout(timeout)).then(status => queueAnomaly(status.anomaly), () => {});
+      client.request(TYPES.STATUS).finally(() => clearTimeout(timeout)).then(status => {
+        queueAnomaly(status.anomaly);
+        if(status.channel_capabilities)void dashboard('/edge/boards',{method:'POST',body:JSON.stringify({uuid,label,ip:board.ip,port:board.port,...status.channel_capabilities})}).catch(error=>log('capability refresh failed',error.message));
+      }, () => {});
       // A board that booted without wall-clock time (ESP before SNTP) starts on V1, stamped on arrival here; switch to its own timestamps once it has them.
       if (!timestamped) client.request(TYPES.HELLO).then(async again => {
         if (timestamped || !again.capabilities?.includes("timestamped_stream")) return;
@@ -265,7 +299,7 @@ async function runConnection(board) {
     log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
     let replayCursor = cursor ?? target;
     try {
-      while (cursor !== null && replayCursor < target) { const result = await client.request(backlogType, backlogPayload(replayCursor)); replayCursor = BigInt(result.last_record_id); if (!result.returned || replayCursor >= target) break; }
+      while (cursor !== null && replayCursor < target) { const result = await client.request(backlogType, backlogPayload(replayCursor)); const previous=replayCursor;replayCursor = BigInt(result.last_record_id); if (replayCursor<=previous || replayCursor >= target) break; }
       if (recoveryWriter) await recoveryWriter.finishRecovery();
       await client.closed; return liveWriter.queue;
     } finally { clearInterval(heartbeat); }

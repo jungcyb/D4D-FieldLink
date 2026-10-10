@@ -8,6 +8,20 @@ test("ADS8688 straight-binary conversion preserves polarity", () => {
   assert.equal(rawCodeToVolts(0), -10.24); assert.equal(rawCodeToVolts(32768), 0); assert.ok(rawCodeToVolts(65535) > 10.239);
 });
 
+test("NU40 decodes signed acceleration in g with its reconstructed sample timestamp", () => {
+  const payload = Buffer.alloc(64), frame = payload.subarray(16);
+  payload.writeBigUInt64BE(42n, 0); payload.writeBigUInt64BE(1760000001000000000n, 8);
+  frame.writeUInt32LE(0x3034554e, 0); frame.writeUInt16LE(1, 4); frame.writeUInt16LE(28, 6);
+  frame.writeUInt32LE(7, 8); frame.writeBigUInt64LE(1760000000000000n, 12);
+  frame.writeUInt32LE(104, 20); frame.writeUInt16LE(3, 24); frame.writeUInt16LE(2, 26);
+  [-16384, 0, 16384].forEach((value, i) => frame.writeInt16LE(value, 28 + i * 2));
+  frame.writeUInt32LE(crc32(frame.subarray(0, 44)), 44);
+  const decoded = decodeFrame(payload, true);
+  assert.equal(decoded.source, 'nu40'); assert.deepEqual(decoded.channelIds, ['CH8', 'CH9', 'CH10']);
+  assert.deepEqual(decoded.samples, [-.999424, 0, .999424]);
+  assert.equal(decoded.timestamp, new Date(1760000000000).toISOString());
+});
+
 test("timestamped frame decoder returns record, time and eight channels", () => {
   const payload = Buffer.alloc(64), frame = payload.subarray(16); payload.writeBigUInt64BE(BigInt(42), 0); payload.writeBigUInt64BE(BigInt(1_760_000_000_123_000_000), 8);
   frame.writeUInt32LE(0x38534441, 0); frame.writeUInt16LE(1, 4); frame.writeUInt16LE(28, 6); frame.writeUInt32LE(7, 8); frame.writeUInt32LE(1000, 20); frame.writeUInt16LE(8, 24); frame.writeUInt16LE(1, 26);
@@ -43,6 +57,16 @@ class CapturingWriter extends BatchWriter {
   closeBatch(){if(this.frames.length)this.batches.push(this.frames);this.frames=[];}
 }
 const rateFrame=(id,rate)=>({recordId:BigInt(id),timestamp:new Date(1760000000000+id*1000/rate).toISOString(),scanRate:rate,samples:Array(8).fill(id),archived:false});
+test("interleaved sources batch independently without artificial sequence gaps", () => {
+  const writer = new CapturingWriter();
+  for (let i = 0; i < 6; i++) {
+    writer.add({...rateFrame(i * 2, 3), source: 'ads8688', sequence: i});
+    writer.add({...rateFrame(i * 2 + 1, 2), source: 'nu40', sequence: i, samples: [0, 1, 2]});
+  }
+  assert.deepEqual(writer.batches.map(batch => [batch[0].source, batch.length]),
+    [['nu40', 2], ['ads8688', 3], ['nu40', 2], ['ads8688', 3], ['nu40', 2]]);
+  assert.ok(writer.batches.every(batch => batch.every(frame => frame.source === batch[0].source)));
+});
 test("collector uses actual SPS for batch size and splits rate changes and record gaps",()=>{
   for(const rate of [250,1800]){const writer=new CapturingWriter();for(let i=0;i<rate+3;i++)writer.add(rateFrame(i,rate));writer.closeBatch();assert.deepEqual(writer.batches.map(b=>b.length),[rate,3]);assert.ok(writer.batches.every(b=>b.every(f=>f.scanRate===rate)));}
   const writer=new CapturingWriter();writer.add(rateFrame(1,250));writer.add(rateFrame(2,250));writer.add(rateFrame(3,1800));writer.add(rateFrame(8,1800));writer.closeBatch();assert.deepEqual(writer.batches.map(b=>b.map(f=>Number(f.recordId))),[[1,2],[3],[8]]);
@@ -101,6 +125,16 @@ test("anomaly diagnoses are posted once per state change for registered channels
   assert.deepEqual(anomalyEvents(undefined,reported,registered).diagnoses,[]);
 });
 
+test("NU40 RMS schema produces continuously refreshed g diagnoses",()=>{
+  const reported=new Map(),sensors=[{channel:"CH8",name:"NU40 X"}];
+  const status={method:"rms_sta_lta",unit:"g",warn_ratio:2,alarm_ratio:3,short_tau_s:.25,long_tau_s:10,evaluated_unix_ms:1760000000123,
+    channels:[{id:"CH8",state:"normal",rms_short:.0123,rms_long:.0456,ratio:.27,changed_unix_ms:1760000000000,events:0}]};
+  const first=anomalyEvents(status,reported,sensors).diagnoses[0];
+  assert.equal(first.channel,"CH8");assert.equal(first.severity,"normal");assert.match(first.description,/0\.0123 g/);
+  status.channels[0].rms_short=.02;status.evaluated_unix_ms++;
+  assert.equal(anomalyEvents(status,reported,sensors).diagnoses.length,1);
+});
+
 test("an anomaly that cleared while the collector was away is reported as normal",()=>{
   const status={warn_ratio:2,alarm_ratio:4,short_tau_s:1,long_tau_s:60,channels:[{id:"CH0",state:"normal",rms_short_v:0.01,rms_long_v:0.01,ratio:1,changed_unix_ms:0,events:1},{id:"CH1",state:"normal",rms_short_v:0.01,rms_long_v:0.01,ratio:1,changed_unix_ms:0,events:0}]};
   const sensors=[{channel:"CH0",diagnosis:{model:"edge-rms-sta-lta",severity:"warning"}},{channel:"CH1",diagnosis:{model:"other",severity:"critical"}}];
@@ -128,4 +162,3 @@ test("every anomaly state change becomes a device log, including unregistered ch
   assert.equal(logs[0].log.metadata.previous,"normal");assert.equal(logs[0].log.timestamp,new Date(1760000000123).toISOString());
   assert.deepEqual(anomalyEvents(status([["CH0","alarm"],["CH2","warning"]]),reported,sensors).logs,[]);
 });
-

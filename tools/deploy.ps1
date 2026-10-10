@@ -43,9 +43,9 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 scp @sshOptions "$root\firmware\m4_ads8688\ti-arm-clang\m4_ads8688.release.out" "${target}:/lib/firmware/ads8688/m4_ads8688_stream.out"
 scp @sshOptions "$root\firmware\r5_ads8688_relay\ti-arm-clang\r5_ads8688_relay.release.out" "${target}:/lib/firmware/ads8688/r5_ads8688_relay.out"
 scp @sshOptions "$root\board\activate_phase2.sh" "${target}:/opt/ads8688/activate_phase2.sh"
-scp @sshOptions "$root\board\ads8688d.py" "${target}:/opt/ads8688/ads8688d.py"
+scp @sshOptions "$root\board\ads8688d.py" "$root\board\nu40.py" "$root\board\nu40_ble.py" "$root\board\requirements.txt" "${target}:/opt/ads8688/"
 scp @sshOptions "$root\board\ads8688-phase2.service" "${target}:/etc/systemd/system/ads8688-phase2.service"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-ssh @sshOptions $target 'chmod 755 /opt/ads8688/activate_phase2.sh /opt/ads8688/ads8688d.py; test -x /opt/ads8688/venv/bin/python; systemctl daemon-reload; systemctl enable --now ads8688-phase2.service; systemctl --no-pager --full status ads8688-phase2.service'
+ssh @sshOptions $target 'set -e; chmod 755 /opt/ads8688/activate_phase2.sh /opt/ads8688/ads8688d.py; test -x /opt/ads8688/venv/bin/python; /opt/ads8688/venv/bin/python -m pip install -r /opt/ads8688/requirements.txt; systemctl daemon-reload; systemctl enable --now ads8688-phase2.service; systemctl --no-pager --full status ads8688-phase2.service'
 exit $LASTEXITCODE
