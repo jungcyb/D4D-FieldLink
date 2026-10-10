@@ -16,7 +16,9 @@ node .\integration\collector.mjs
 Every 10 s the collector also sends `STATUS`; a board that does not answer
 is dropped and rediscovered. When the reply carries `anomaly` (short/long-term
 RMS, see `docs/PROTOCOL.md`), each channel state change is posted to the
-dashboard as a diagnosis with model `edge-rms-sta-lta`.
+dashboard as a diagnosis with model `edge-rms-sta-lta` (registered channels)
+and as a device log `AD_RMS_WARNING` / `AD_RMS_ALARM` / `AD_RMS_NORMAL` with
+the ratio and RMS values in its metadata (every channel).
 
 Register real channels as `CH0` through `CH7`. ADS8688 straight-binary codes
 are converted to the configured bipolar input voltage range (currently

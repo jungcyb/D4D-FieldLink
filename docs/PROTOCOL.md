@@ -70,7 +70,7 @@ anomaly: { method:"rms_sta_lta", state, short_tau_s, long_tau_s, warn_ratio, ala
 state: "warmup" | "normal" | "warning" | "alarm"
 ```
 
-collector는 10초 주기 `STATUS`에서 채널 상태가 바뀔 때만 대시보드 진단(`model="edge-rms-sta-lta"`, `alarm`→`critical`)으로 올린다.
+collector는 10초 주기 `STATUS`에서 채널 상태가 바뀔 때만 대시보드 진단(`model="edge-rms-sta-lta"`, `alarm`→`critical`, 센서가 등록된 채널)과 장치 로그(`AD_RMS_WARNING`·`AD_RMS_ALARM`·`AD_RMS_NORMAL`, 등급 warning·error·info, 모든 채널, 판정 근거는 metadata)로 올린다. 로그 batch ID는 `ad-<채널>-<changed_unix_ms>-<상태>`라 재접속 뒤 같은 이벤트를 다시 보내도 한 번만 남는다.
 
 ## 연결 단절 규칙
 

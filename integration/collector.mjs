@@ -181,21 +181,28 @@ class OrderedFrames {
 const ANOMALY_SEVERITY = { normal: "normal", warning: "warning", alarm: "critical" };
 const ANOMALY_TITLE = { normal: "진동 RMS 정상 복귀", warning: "진동 RMS 증가 (경고)", alarm: "진동 RMS 급증 (위험)" };
 const ANOMALY_MODEL = "edge-rms-sta-lta", SEVERITY_STATE = { normal: "normal", warning: "warning", critical: "alarm" };
-// Turn the board's STATUS.anomaly (short/long-term RMS) into dashboard diagnoses, one per channel state change.
-// `reported` remembers the last state per channel across calls. It starts from the sensor's latest dashboard diagnosis from this
-// detector, so a return to normal that happened while the collector was away still clears the warning; with none, normal is not reported.
-export function anomalyDiagnoses(anomaly, reported, sensors) {
-  const sensorFor = new Map(sensors.map(sensor => [sensor.channel.toUpperCase(), sensor])), diagnoses = [];
+const ANOMALY_LOG_LEVEL = { normal: "info", warning: "warning", alarm: "error" };
+// Turn the board's STATUS.anomaly (short/long-term RMS) into one dashboard diagnosis (registered channels only) and one device log
+// (every channel) per channel state change. `reported` remembers the last state per channel across calls. It starts from the sensor's
+// latest dashboard diagnosis from this detector, so a return to normal that happened while the collector was away still clears the
+// warning; with none, normal is not reported. Log batch ids are per event, so an event posted again after a reconnect is deduplicated.
+export function anomalyEvents(anomaly, reported, sensors) {
+  const sensorFor = new Map(sensors.map(sensor => [sensor.channel.toUpperCase(), sensor])), diagnoses = [], logs = [];
   for (const channel of anomaly?.channels || []) {
     if (!ANOMALY_SEVERITY[channel.state]) continue;
     const sensor = sensorFor.get(channel.id.toUpperCase());
     if (!reported.has(channel.id) && sensor?.diagnosis?.model === ANOMALY_MODEL) reported.set(channel.id, SEVERITY_STATE[sensor.diagnosis.severity]);
     const previous = reported.get(channel.id); reported.set(channel.id, channel.state);
-    if (previous === channel.state || (previous === undefined && channel.state === "normal") || !sensor) continue;
-    diagnoses.push({ channel: channel.id, timestamp: new Date(channel.changed_unix_ms || Date.now()).toISOString(), severity: ANOMALY_SEVERITY[channel.state], title: ANOMALY_TITLE[channel.state], model: ANOMALY_MODEL,
-      description: `단기 RMS ${channel.rms_short_v.toFixed(4)} V / 장기 RMS ${channel.rms_long_v.toFixed(4)} V, 비율 ${channel.ratio.toFixed(2)} (경고 ${anomaly.warn_ratio}·위험 ${anomaly.alarm_ratio}, 시정수 ${anomaly.short_tau_s}s/${anomaly.long_tau_s}s)` });
+    if (previous === channel.state || (previous === undefined && channel.state === "normal")) continue;
+    const timestamp = new Date(channel.changed_unix_ms || Date.now()).toISOString(), ratio = channel.ratio.toFixed(2);
+    const description = `단기 RMS ${channel.rms_short_v.toFixed(4)} V / 장기 RMS ${channel.rms_long_v.toFixed(4)} V, 비율 ${ratio} (경고 ${anomaly.warn_ratio}·위험 ${anomaly.alarm_ratio}, 시정수 ${anomaly.short_tau_s}s/${anomaly.long_tau_s}s)`;
+    if (sensor) diagnoses.push({ channel: channel.id, timestamp, severity: ANOMALY_SEVERITY[channel.state], title: ANOMALY_TITLE[channel.state], model: ANOMALY_MODEL, description });
+    logs.push({ batchId: `ad-${channel.id}-${channel.changed_unix_ms || timestamp}-${channel.state}`, log: { timestamp, level: ANOMALY_LOG_LEVEL[channel.state], code: `AD_RMS_${channel.state.toUpperCase()}`, sensorId: sensor?.id ?? null,
+      message: `${channel.id}${sensor?.name ? ` (${sensor.name})` : ""} ${ANOMALY_TITLE[channel.state]}: 비율 ${ratio}`,
+      metadata: { detector: anomaly.method || "rms_sta_lta", channel: channel.id, state: channel.state, previous: previous ?? null, ratio: channel.ratio, rmsShortV: channel.rms_short_v, rmsLongV: channel.rms_long_v,
+        warnRatio: anomaly.warn_ratio, alarmRatio: anomaly.alarm_ratio, shortTauS: anomaly.short_tau_s, longTauS: anomaly.long_tau_s, events: channel.events } } });
   }
-  return diagnoses;
+  return { diagnoses, logs };
 }
 
 function backlogPayload(after, limit = 2000) { const payload = Buffer.alloc(12); payload.writeBigUInt64BE(after, 0); payload.writeUInt32BE(limit, 8); return payload; }
@@ -226,10 +233,9 @@ async function runConnection(board) {
     const anomalyStates = new Map();
     async function reportAnomaly(anomaly) {
       if (!anomaly) return;
-      await liveWriter.refreshSensors(); const diagnoses = anomalyDiagnoses(anomaly, anomalyStates, liveWriter.sensors);
-      if (!diagnoses.length) return;
-      await dashboard("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: uuid, diagnoses }) });
-      for (const diagnosis of diagnoses) log("anomaly", `${uuid} ${diagnosis.channel} ${diagnosis.severity}: ${diagnosis.description}`);
+      await liveWriter.refreshSensors(); const { diagnoses, logs } = anomalyEvents(anomaly, anomalyStates, liveWriter.sensors);
+      for (const { batchId, log: entry } of logs) { await dashboard("/edge/logs", { method: "POST", body: JSON.stringify({ daqUuid: uuid, batchId, logs: [entry] }) }); log("anomaly", `${uuid} ${entry.code} ${entry.message}`); }
+      if (diagnoses.length) await dashboard("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: uuid, diagnoses }) });
     }
     let replayCursor = cursor ?? target;
     try {

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import dgram from "node:dgram";
 import { crc32 } from "node:zlib";
-import { anomalyDiagnoses, discover, discoverBoards, decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter } from "./collector.mjs";
+import { anomalyEvents, discover, discoverBoards, decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter } from "./collector.mjs";
 
 test("ADS8688 straight-binary conversion preserves polarity", () => {
   assert.equal(rawCodeToVolts(0), -10.24); assert.equal(rawCodeToVolts(32768), 0); assert.ok(rawCodeToVolts(65535) > 10.239);
@@ -90,21 +90,21 @@ test("fixed BOARD_HOST accepts a comma-separated board list",async t=>{
 test("anomaly diagnoses are posted once per state change for registered channels",()=>{
   const status=(states)=>({warn_ratio:2,alarm_ratio:4,short_tau_s:1,long_tau_s:60,channels:states.map(([id,state],i)=>({id,state,rms_short_v:0.1,rms_long_v:0.05,ratio:2.5,changed_unix_ms:1760000000000+i,events:1}))});
   const reported=new Map(),registered=[{channel:"CH0"},{channel:"ch1"}];
-  assert.deepEqual(anomalyDiagnoses(status([["CH0","warmup"],["CH1","normal"]]),reported,registered),[]);
-  assert.deepEqual(anomalyDiagnoses(status([["CH0","normal"],["CH1","normal"]]),reported,registered),[]);
-  const raised=anomalyDiagnoses(status([["CH0","alarm"],["CH1","normal"],["CH2","warning"]]),reported,registered);
+  assert.deepEqual(anomalyEvents(status([["CH0","warmup"],["CH1","normal"]]),reported,registered).diagnoses,[]);
+  assert.deepEqual(anomalyEvents(status([["CH0","normal"],["CH1","normal"]]),reported,registered).diagnoses,[]);
+  const raised=anomalyEvents(status([["CH0","alarm"],["CH1","normal"],["CH2","warning"]]),reported,registered).diagnoses;
   assert.deepEqual(raised.map(d=>[d.channel,d.severity]),[["CH0","critical"]]);
   assert.equal(raised[0].timestamp,new Date(1760000000000).toISOString());assert.match(raised[0].description,/비율 2\.50/);
-  assert.deepEqual(anomalyDiagnoses(status([["CH0","alarm"],["CH1","normal"]]),reported,registered),[]);
-  assert.deepEqual(anomalyDiagnoses(status([["CH0","normal"],["CH1","warning"]]),reported,registered).map(d=>[d.channel,d.severity]),[["CH0","normal"],["CH1","warning"]]);
-  assert.deepEqual(anomalyDiagnoses(status([["CH5","alarm"]]),new Map(),registered),[]);
-  assert.deepEqual(anomalyDiagnoses(undefined,reported,registered),[]);
+  assert.deepEqual(anomalyEvents(status([["CH0","alarm"],["CH1","normal"]]),reported,registered).diagnoses,[]);
+  assert.deepEqual(anomalyEvents(status([["CH0","normal"],["CH1","warning"]]),reported,registered).diagnoses.map(d=>[d.channel,d.severity]),[["CH0","normal"],["CH1","warning"]]);
+  assert.deepEqual(anomalyEvents(status([["CH5","alarm"]]),new Map(),registered).diagnoses,[]);
+  assert.deepEqual(anomalyEvents(undefined,reported,registered).diagnoses,[]);
 });
 
 test("an anomaly that cleared while the collector was away is reported as normal",()=>{
   const status={warn_ratio:2,alarm_ratio:4,short_tau_s:1,long_tau_s:60,channels:[{id:"CH0",state:"normal",rms_short_v:0.01,rms_long_v:0.01,ratio:1,changed_unix_ms:0,events:1},{id:"CH1",state:"normal",rms_short_v:0.01,rms_long_v:0.01,ratio:1,changed_unix_ms:0,events:0}]};
   const sensors=[{channel:"CH0",diagnosis:{model:"edge-rms-sta-lta",severity:"warning"}},{channel:"CH1",diagnosis:{model:"other",severity:"critical"}}];
-  assert.deepEqual(anomalyDiagnoses(status,new Map(),sensors).map(d=>[d.channel,d.severity]),[["CH0","normal"]]);
+  assert.deepEqual(anomalyEvents(status,new Map(),sensors).diagnoses.map(d=>[d.channel,d.severity]),[["CH0","normal"]]);
 });
 
 test("recovery batches never project past the plan end when the real rate beats the advertised SPS",()=>{
@@ -115,5 +115,17 @@ test("recovery batches never project past the plan end when the real rate beats 
   const writer=new RecoveryWriter();for(const frame of frames)writer.add(frame);writer.closeBatch();
   assert.equal(writer.batches.flat().length,300);
   for(const batch of writer.batches)assert.ok(Date.parse(batch[0].timestamp)+(batch.length-1)*1000/104<=Date.parse(plan.to)+1);
+});
+
+test("every anomaly state change becomes a device log, including unregistered channels",()=>{
+  const status=(states)=>({method:"rms_sta_lta",warn_ratio:2,alarm_ratio:4,short_tau_s:1,long_tau_s:60,channels:states.map(([id,state])=>({id,state,rms_short_v:0.2,rms_long_v:0.04,ratio:5,changed_unix_ms:1760000000123,events:1}))});
+  const reported=new Map(),sensors=[{id:"sensor-0",name:"motor",channel:"CH0"}];
+  anomalyEvents(status([["CH0","normal"],["CH2","normal"]]),reported,sensors);
+  const {diagnoses,logs}=anomalyEvents(status([["CH0","alarm"],["CH2","warning"]]),reported,sensors);
+  assert.deepEqual(diagnoses.map(d=>d.channel),["CH0"]);
+  assert.deepEqual(logs.map(({log})=>[log.code,log.level,log.sensorId]),[["AD_RMS_ALARM","error","sensor-0"],["AD_RMS_WARNING","warning",null]]);
+  assert.equal(logs[0].batchId,"ad-CH0-1760000000123-alarm");assert.match(logs[0].log.message,/CH0 \(motor\) 진동 RMS 급증/);
+  assert.equal(logs[0].log.metadata.previous,"normal");assert.equal(logs[0].log.timestamp,new Date(1760000000123).toISOString());
+  assert.deepEqual(anomalyEvents(status([["CH0","alarm"],["CH2","warning"]]),reported,sensors).logs,[]);
 });
 
