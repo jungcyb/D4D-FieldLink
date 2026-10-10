@@ -1,0 +1,8 @@
+## IDF Component Manager Manifest File
+dependencies:
+  # ESP32-P4 has no radio: BLE runs on the on-board ESP32-C6 co-processor,
+  # reached over SDIO through ESP-Hosted (NimBLE host on P4, VHCI transport).
+  espressif/esp_hosted:
+    version: "~2"
+    rules:
+      - if: "target in [esp32p4]"
