@@ -23,6 +23,7 @@ static float s_a_short;
 static float s_a_long;
 static uint32_t s_samples;
 static uint32_t s_warmup_samples;
+static bool s_changed;
 
 void anomaly_init(const anomaly_config_t *cfg, unsigned channels)
 {
@@ -92,6 +93,7 @@ void anomaly_update(const Ads8688StreamFrame *frame, uint64_t unix_ms)
             }
             c->out.state = next;
             c->out.changed_unix_ms = unix_ms;
+            s_changed = true;
         }
     }
     if (s_samples < UINT32_MAX) {
@@ -112,6 +114,13 @@ unsigned anomaly_channels(void)
 void anomaly_get_channel(unsigned ch, anomaly_channel_t *out)
 {
     *out = s_ch[ch < s_channels ? ch : 0].out;
+}
+
+bool anomaly_take_changed(void)
+{
+    bool changed = s_changed;
+    s_changed = false;
+    return changed;
 }
 
 anomaly_state_t anomaly_overall(void)

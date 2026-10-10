@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "ads8688_stream.h"
@@ -57,6 +58,9 @@ void anomaly_update(const Ads8688StreamFrame *frame, uint64_t unix_ms);
 void anomaly_get_config(anomaly_config_t *out);
 unsigned anomaly_channels(void);
 void anomaly_get_channel(unsigned ch, anomaly_channel_t *out);
+
+/* True once after any channel changed state since the last call. */
+bool anomaly_take_changed(void);
 
 /* Worst state over all channels. */
 anomaly_state_t anomaly_overall(void);

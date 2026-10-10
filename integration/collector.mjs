@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 
-const TYPES = { HELLO: 1, STATUS: 2, ARCHIVE_INFO: 8, READ_BACKLOG: 9, READ_BACKLOG_V2: 10, STREAM_START_V2: 11, STREAM_START: 6, LIVE_DATA: 0x100, ARCHIVE_DATA: 0x101, ARCHIVE_DATA_V2: 0x102, LIVE_DATA_V2: 0x103, RESPONSE: 0x8000, ERROR: 0xffff };
+const TYPES = { HELLO: 1, STATUS: 2, ARCHIVE_INFO: 8, READ_BACKLOG: 9, READ_BACKLOG_V2: 10, STREAM_START_V2: 11, STREAM_START: 6, LIVE_DATA: 0x100, ARCHIVE_DATA: 0x101, ARCHIVE_DATA_V2: 0x102, LIVE_DATA_V2: 0x103, ANOMALY_EVENT: 0x104, RESPONSE: 0x8000, ERROR: 0xffff };
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const dashboardUrl = process.env.DASHBOARD_URL || "http://127.0.0.1:3000";
 const stateDirectory = process.env.COLLECTOR_STATE_DIR || join(ROOT, "integration", "state");
@@ -97,7 +97,7 @@ export async function discover() {
 
 class BoardClient {
   constructor(socket) {
-    this.socket = socket; this.buffer = Buffer.alloc(0); this.pending = new Map(); this.requestId = 1; this.onFrame = () => {};
+    this.socket = socket; this.buffer = Buffer.alloc(0); this.pending = new Map(); this.requestId = 1; this.onFrame = () => {}; this.onAnomaly = () => {};
     this.closed = new Promise(resolve => { this.resolveClosed = resolve; });
     socket.on("data", chunk => this.receive(chunk)); socket.on("close", () => { for (const item of this.pending.values()) item.reject(new Error("board connection closed")); this.pending.clear(); this.resolveClosed(); }); socket.on("error", () => {});
   }
@@ -112,6 +112,7 @@ class BoardClient {
       if (this.buffer.length < 12 + size) return;
       const type = this.buffer.readUInt16BE(6), requestId = this.buffer.readUInt32BE(8), payload = this.buffer.subarray(12, 12 + size); this.buffer = this.buffer.subarray(12 + size);
       if ([TYPES.LIVE_DATA, TYPES.ARCHIVE_DATA, TYPES.ARCHIVE_DATA_V2, TYPES.LIVE_DATA_V2].includes(type)) { try { this.onFrame({ ...decodeFrame(payload, type === TYPES.ARCHIVE_DATA_V2 || type === TYPES.LIVE_DATA_V2), archived: type === TYPES.ARCHIVE_DATA || type === TYPES.ARCHIVE_DATA_V2 }); } catch (error) { this.socket.destroy(error); } continue; }
+      if (type === TYPES.ANOMALY_EVENT) { try { this.onAnomaly(JSON.parse(payload.toString("utf8"))); } catch (error) { log("invalid anomaly event", error.message); } continue; }
       const pending = this.pending.get(requestId); if (!pending) continue;
       if (type === TYPES.ERROR) { this.pending.delete(requestId); pending.reject(new Error(JSON.parse(payload.toString("utf8")).error)); }
       else if (type === (pending.type | TYPES.RESPONSE)) { this.pending.delete(requestId); pending.resolve(JSON.parse(payload.toString("utf8"))); }
@@ -220,23 +221,32 @@ async function runConnection(board) {
     const liveWriter = new BatchWriter(uuid, client), liveFrames = new OrderedFrames(liveWriter, null);
     const recoveryWriter = recovery ? new BatchWriter(uuid, client, recovery) : null, recoveryFrames = recoveryWriter && cursor !== null ? new OrderedFrames(recoveryWriter, cursor + BigInt(1)) : null;
     client.onFrame = frame => frame.archived ? recoveryFrames?.accept(frame) : liveFrames.accept(frame);
-    const timestamped = hello.capabilities?.includes("timestamped_stream"), streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
-    await client.request(streamType);
-    const afterStart = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, target = afterStart?.latest_record_id == null ? BigInt(0) : BigInt(afterStart.latest_record_id);
-    // Kernel keepalive takes minutes to notice a board that lost power or changed IP, so probe it with STATUS and drop the link if it stops answering.
-    const heartbeat = setInterval(() => {
-      void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label,ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error));
-      const timeout = setTimeout(() => client.socket.destroy(new Error("board stopped answering STATUS")), Number(process.env.BOARD_STATUS_TIMEOUT_MS || 8000));
-      client.request(TYPES.STATUS).finally(() => clearTimeout(timeout)).then(status => reportAnomaly(status.anomaly).catch(error => log("anomaly report failed", `${uuid} ${error.message}`)), () => {});
-    }, 10000);
-    log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
-    const anomalyStates = new Map();
+    // Anomaly verdicts arrive pushed (ANOMALY_EVENT, on state change) and in the 10 s STATUS fallback; report them in arrival order.
+    const anomalyStates = new Map(); let anomalyQueue = Promise.resolve();
     async function reportAnomaly(anomaly) {
       if (!anomaly) return;
       await liveWriter.refreshSensors(); const { diagnoses, logs } = anomalyEvents(anomaly, anomalyStates, liveWriter.sensors);
       for (const { batchId, log: entry } of logs) { await dashboard("/edge/logs", { method: "POST", body: JSON.stringify({ daqUuid: uuid, batchId, logs: [entry] }) }); log("anomaly", `${uuid} ${entry.code} ${entry.message}`); }
       if (diagnoses.length) await dashboard("/edge/frames", { method: "POST", body: JSON.stringify({ daqUuid: uuid, diagnoses }) });
     }
+    const queueAnomaly = anomaly => { anomalyQueue = anomalyQueue.then(() => reportAnomaly(anomaly)).catch(error => log("anomaly report failed", `${uuid} ${error.message}`)); };
+    client.onAnomaly = queueAnomaly;
+    let timestamped = hello.capabilities?.includes("timestamped_stream");
+    const streamType = timestamped ? TYPES.STREAM_START_V2 : TYPES.STREAM_START, backlogType = timestamped ? TYPES.READ_BACKLOG_V2 : TYPES.READ_BACKLOG;
+    await client.request(streamType);
+    const afterStart = recovery ? await client.request(TYPES.ARCHIVE_INFO) : null, target = afterStart?.latest_record_id == null ? BigInt(0) : BigInt(afterStart.latest_record_id);
+    // Kernel keepalive takes minutes to notice a board that lost power or changed IP, so probe it with STATUS and drop the link if it stops answering.
+    const heartbeat = setInterval(() => {
+      void dashboard("/edge/boards", { method: "POST", body: JSON.stringify({uuid,label,ip:board.ip,port:board.port}) }).catch(error => client.socket.destroy(error));
+      const timeout = setTimeout(() => client.socket.destroy(new Error("board stopped answering STATUS")), Number(process.env.BOARD_STATUS_TIMEOUT_MS || 8000));
+      client.request(TYPES.STATUS).finally(() => clearTimeout(timeout)).then(status => queueAnomaly(status.anomaly), () => {});
+      // A board that booted without wall-clock time (ESP before SNTP) starts on V1, stamped on arrival here; switch to its own timestamps once it has them.
+      if (!timestamped) client.request(TYPES.HELLO).then(async again => {
+        if (timestamped || !again.capabilities?.includes("timestamped_stream")) return;
+        timestamped = true; await client.request(TYPES.STREAM_START_V2); log("collector switched to timestamped stream", `${board.ip}:${board.port} uuid=${uuid}`);
+      }).catch(() => {});
+    }, 10000);
+    log("collector connected", `${board.ip}:${board.port} uuid=${uuid} timestamped=${timestamped}${recovery ? ` recovery=${recovery.id}` : ""}`);
     let replayCursor = cursor ?? target;
     try {
       while (cursor !== null && replayCursor < target) { const result = await client.request(backlogType, backlogPayload(replayCursor)); replayCursor = BigInt(result.last_record_id); if (!result.returned || replayCursor >= target) break; }

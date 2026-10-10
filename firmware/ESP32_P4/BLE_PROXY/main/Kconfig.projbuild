@@ -42,6 +42,18 @@ menu "FieldLink BLE proxy"
             When exceeded, the client is disconnected ("slow client"),
             the same policy as the AM6442 daemon.
 
+    config FIELDLINK_DAQ_RESAMPLE
+        bool "Re-time BLE samples onto an exact scan-rate grid"
+        default y
+        help
+            BLE sensors declare a nominal rate (NU40: 104 Hz) while their
+            sample clock runs a few percent off (~107 Hz), and frames
+            arrive in packet bursts. The collector and dashboard assume
+            frames exactly 1/scanRateHz apart, so raw batches would not
+            join. This measures the real rate and interpolates (8-point
+            Lagrange, ~37 ms delay) onto an exact grid. Anomaly detection
+            still runs on the original samples.
+
     config FIELDLINK_DAQ_EXPOSED_CHANNELS
         int "Channels advertised to the collector"
         range 1 8
@@ -85,7 +97,12 @@ menu "FieldLink BLE proxy"
         config FIELDLINK_ANOMALY_SHORT_TAU_MS
             int "Short-term IIR time constant (ms)"
             range 10 60000
-            default 1000
+            default 100
+            help
+                100 ms with a 1.3x warning catches a 1.5x RMS burst of
+                0.2 s on a 20 Hz vibration every time (0.1 s: ~70 %),
+                ignores 1.2x, and false-alarms about once an hour on a
+                signal with 10 % noise (simulated).
 
         config FIELDLINK_ANOMALY_LONG_TAU_S
             int "Long-term IIR time constant (s)"
@@ -98,12 +115,12 @@ menu "FieldLink BLE proxy"
         config FIELDLINK_ANOMALY_WARN_RATIO_X100
             int "Warning when short/long RMS ratio reaches (x100)"
             range 101 10000
-            default 200
+            default 130
 
         config FIELDLINK_ANOMALY_ALARM_RATIO_X100
             int "Alarm when short/long RMS ratio reaches (x100)"
             range 101 10000
-            default 400
+            default 200
 
         config FIELDLINK_ANOMALY_RMS_FLOOR_UV
             int "Long-term RMS floor (uV)"

@@ -40,6 +40,7 @@
 #include "daq_server.h"
 #include "eth.h"
 #include "fl_link.h"
+#include "resample.h"
 
 #define PROTOCOL_VERSION    1
 #define NET_HEADER_SIZE     12
@@ -77,6 +78,7 @@
 #define MSG_ARCHIVE_DATA    0x0101
 #define MSG_ARCHIVE_DATA_V2 0x0102
 #define MSG_LIVE_DATA_V2    0x0103
+#define MSG_ANOMALY_EVENT   0x0104  /* pushed on state change, request_id 0 */
 #define MSG_RESPONSE        0x8000
 #define MSG_ERROR           0xffff
 
@@ -479,6 +481,10 @@ static void handle_command(client_t *c, uint16_t type, uint32_t request_id,
         jb_archive_info(&b);
         jb_printf(&b, ",\"anomaly\":");
         jb_anomaly(&b);
+        jb_printf(&b, ",\"resampler\":{\"enabled\":%s,\"input_rate_hz\":%.3f,"
+                      "\"output_rate_hz\":%" PRIu32 "}",
+                  CONFIG_FIELDLINK_DAQ_RESAMPLE ? "true" : "false", resample_input_rate(),
+                  s_scan_rate);
         jb_printf(&b, ",\"ble\":{\"connected\":%s,\"rx_bytes\":%" PRIu32
                       ",\"skipped_bytes\":%" PRIu32 ",\"lost_frames\":%" PRIu32
                       ",\"rx_overflow_bytes\":%" PRIu32 "}",
@@ -774,11 +780,56 @@ static void filter_frame(Ads8688StreamFrame *f)
     f->crc32 = Ads8688Stream_crc32(f, offsetof(Ads8688StreamFrame, crc32));
 }
 
+/* Push STATUS.anomaly to every streaming client as soon as a channel
+ * changes state, instead of waiting for the collector's next STATUS. */
+static void push_anomaly_event(void)
+{
+    jbuf_t b = {.buf = s_json, .cap = sizeof(s_json)};
+    jb_anomaly(&b);
+    if (!jb_ok(&b)) {
+        return;
+    }
+    for (size_t i = 0; i < CONFIG_FIELDLINK_DAQ_MAX_CLIENTS; i++) {
+        client_t *c = &s_clients[i];
+        if (c->fd >= 0 && c->streaming != 0) {
+            client_send(c, MSG_ANOMALY_EVENT, 0, b.buf, b.len);
+        }
+    }
+}
+
+/* Filter, number, store and stream one output frame. */
+static void publish_record(Ads8688StreamFrame *f, uint64_t unix_ns)
+{
+    uint8_t v1[8 + FRAME_SIZE];
+    uint8_t v2[16 + FRAME_SIZE];
+
+    filter_frame(f);
+    uint64_t record_id = s_next_record_id++;
+    s_frames_total++;
+    archive_append(record_id, unix_ns, f);
+
+    put_be64(v1, record_id);
+    memcpy(v1 + 8, f, FRAME_SIZE);
+    put_be64(v2, record_id);
+    put_be64(v2 + 8, unix_ns);
+    memcpy(v2 + 16, f, FRAME_SIZE);
+
+    for (size_t i = 0; i < CONFIG_FIELDLINK_DAQ_MAX_CLIENTS; i++) {
+        client_t *c = &s_clients[i];
+        if (c->fd < 0 || c->streaming == 0) {
+            continue;
+        }
+        if (c->streaming == 2) {
+            client_send(c, MSG_LIVE_DATA_V2, 0, v2, sizeof(v2));
+        } else {
+            client_send(c, MSG_LIVE_DATA, 0, v1, sizeof(v1));
+        }
+    }
+}
+
 static void drain_live_queue(void)
 {
     live_item_t item;
-    uint8_t v1[8 + FRAME_SIZE];
-    uint8_t v2[16 + FRAME_SIZE];
 
     while (xQueueReceive(s_live_queue, &item, 0) == pdTRUE) {
         Ads8688StreamFrame *f = &item.frame;
@@ -789,11 +840,11 @@ static void drain_live_queue(void)
             f->scanRateHz != s_scan_rate) {
             filter_reset();
             anomaly_reset();
+            resample_reset();
         }
         /* Anomaly detection sees the raw samples: the filters below
          * would hide the vibration energy it measures. */
         anomaly_update(f, item.unix_ns / 1000000ULL);
-        filter_frame(f);
 
         if (s_have_sequence && f->sequence != s_last_sequence + 1) {
             s_gaps_total += f->sequence - s_last_sequence - 1;
@@ -803,27 +854,19 @@ static void drain_live_queue(void)
         s_scan_rate = f->scanRateHz;
         s_last_frame_us = esp_timer_get_time();
 
-        uint64_t record_id = s_next_record_id++;
-        s_frames_total++;
-        archive_append(record_id, item.unix_ns, f);
-
-        put_be64(v1, record_id);
-        memcpy(v1 + 8, f, FRAME_SIZE);
-        put_be64(v2, record_id);
-        put_be64(v2 + 8, item.unix_ns);
-        memcpy(v2 + 16, f, FRAME_SIZE);
-
-        for (size_t i = 0; i < CONFIG_FIELDLINK_DAQ_MAX_CLIENTS; i++) {
-            client_t *c = &s_clients[i];
-            if (c->fd < 0 || c->streaming == 0) {
-                continue;
-            }
-            if (c->streaming == 2) {
-                client_send(c, MSG_LIVE_DATA_V2, 0, v2, sizeof(v2));
-            } else {
-                client_send(c, MSG_LIVE_DATA, 0, v1, sizeof(v1));
-            }
+#if CONFIG_FIELDLINK_DAQ_RESAMPLE
+        /* Re-time onto an exact scanRateHz grid (see resample.h). */
+        resample_out_t out[8];
+        unsigned n = resample_push(f, item.unix_ns, out, sizeof(out) / sizeof(out[0]));
+        for (unsigned i = 0; i < n; i++) {
+            publish_record(&out[i].frame, out[i].unix_ns);
         }
+#else
+        publish_record(f, item.unix_ns);
+#endif
+    }
+    if (anomaly_take_changed()) {
+        push_anomaly_event();
     }
 }
 
