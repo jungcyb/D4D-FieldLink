@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import dgram from "node:dgram";
 import { crc32 } from "node:zlib";
-import { discover, decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter } from "./collector.mjs";
+import { discover, discoverBoards, decodeDiscoveryResponse, decodeFrame, rawCodeToVolts, recoveryCursor, recoveryGaps, BatchWriter } from "./collector.mjs";
 
 test("ADS8688 straight-binary conversion preserves polarity", () => {
   assert.equal(rawCodeToVolts(0), -10.24); assert.equal(rawCodeToVolts(32768), 0); assert.ok(rawCodeToVolts(65535) > 10.239);
@@ -67,4 +67,22 @@ test("collector discovery falls back to v1-only deployed boards",async t=>{
     const reply=Buffer.alloc(36);reply.write("A8DR");reply.writeUInt16BE(1,4);query.copy(reply,8,8,16);Buffer.alloc(16,1).copy(reply,16);reply.writeUInt16BE(8765,32);socket.send(reply,remote.port,remote.address);
   });
   const board=await discover();assert.equal(board.port,8765);assert.equal(board.uuid,"01010101-0101-0101-0101-010101010101");assert.deepEqual(versions.sort(),[1,2]);
+});
+
+test("collector discovery returns every answering board for parallel collection",async t=>{
+  const socket=dgram.createSocket("udp4");await new Promise(resolve=>socket.bind(0,"127.0.0.1",resolve));
+  const keys=["BOARD_HOST","BOARD_DISCOVERY_PORT","BOARD_DISCOVERY_ADDRESS"],saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  t.after(()=>{socket.close();for(const key of keys){if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];}});
+  delete process.env.BOARD_HOST;process.env.BOARD_DISCOVERY_PORT=String(socket.address().port);process.env.BOARD_DISCOVERY_ADDRESS="127.0.0.1";
+  socket.on("message",(query,remote)=>{
+    if(query.readUInt16BE(4)!==1)return;
+    for(const id of [1,2]){const reply=Buffer.alloc(36);reply.write("A8DR");reply.writeUInt16BE(1,4);query.copy(reply,8,8,16);Buffer.alloc(16,id).copy(reply,16);reply.writeUInt16BE(8765,32);socket.send(reply,remote.port,remote.address);}
+  });
+  const boards=await discoverBoards();assert.deepEqual(boards.map(board=>board.uuid).sort(),["01010101-0101-0101-0101-010101010101","02020202-0202-0202-0202-020202020202"]);
+});
+
+test("fixed BOARD_HOST accepts a comma-separated board list",async t=>{
+  const saved=process.env.BOARD_HOST;t.after(()=>{if(saved===undefined)delete process.env.BOARD_HOST;else process.env.BOARD_HOST=saved;});
+  process.env.BOARD_HOST="192.168.0.240, 192.168.0.62";
+  assert.deepEqual((await discoverBoards()).map(board=>board.ip),["192.168.0.240","192.168.0.62"]);
 });
