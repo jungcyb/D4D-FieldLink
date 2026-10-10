@@ -1,5 +1,5 @@
 param(
-  [int]$Port = 3000,
+  [ValidateRange(1, 65535)][int]$Port = 3000,
   [string]$BoardHost = '',
   [string]$DiscoveryAddress = '255.255.255.255',
   [switch]$DashboardOnly
@@ -7,6 +7,26 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
+
+# Fail before rebuilding .next or spawning a duplicate collector.
+function Assert-FieldlinkPortAvailable {
+  param([int]$ServerPort)
+  $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $ServerPort)
+  try {
+    $portProbe.ExclusiveAddressUse = $true
+    $portProbe.Start()
+  } catch [System.Net.Sockets.SocketException] {
+    if ($_.Exception.SocketErrorCode -eq [System.Net.Sockets.SocketError]::AddressAlreadyInUse) {
+      $portOwners = @(Get-NetTCPConnection -State Listen -LocalPort $ServerPort -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+      $ownerHint = if ($portOwners.Count) { " (PID: $($portOwners -join ', '))" } else { '' }
+      throw "Port $ServerPort is already in use$ownerHint. Stop the existing server with Ctrl+C, then run this script again; or use -Port 3001. Build and collector startup were skipped."
+    }
+    throw
+  } finally {
+    $portProbe.Stop()
+  }
+}
+Assert-FieldlinkPortAvailable -ServerPort $Port
 $nodeCandidates = @(
   (Get-Command node -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
   (Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe')
@@ -32,6 +52,8 @@ try {
 } finally {
   Pop-Location
 }
+
+Assert-FieldlinkPortAvailable -ServerPort $Port
 
 $collector = $null
 if (-not $DashboardOnly) {

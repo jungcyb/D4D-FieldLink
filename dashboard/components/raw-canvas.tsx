@@ -2,7 +2,7 @@
 import {sampleTimeMs} from "@/lib/sampling";
 import { useEffect, useRef, useState } from "react";
 import type { Envelope } from "@/lib/signal";
-import { fitRange, nearestPoint, valueDomain, formatValue, type PlotRange } from "@/lib/plot";
+import { fitRange, rawPlotRange, nearestPoint, valueDomain, formatValue, type PlotRange } from "@/lib/plot";
 export interface RawWindow extends Envelope { sensorId: string; timestamp: string | null; sps: number }
 const LEFT = 84, RIGHT = 22, TOP = 24, BOTTOM = 42;
 export default function RawCanvas({window: signal, unit = "V", labels, onInspect, height = 380}: {
@@ -11,12 +11,14 @@ export default function RawCanvas({window: signal, unit = "V", labels, onInspect
   const ref = useRef<HTMLCanvasElement>(null), panel = useRef<HTMLDivElement>(null);
   const [range, setRange] = useState<PlotRange | null>(null), [hover, setHover] = useState<number | null>(null);
   const [lockedY, setLockedY] = useState<PlotRange | null>(null), [error, setError] = useState("");
-  const view = range ? fitRange(...range, signal.count) : [0, Math.max(1, signal.count - 1)] as PlotRange;
+  const [axis,setAxis]=useState<"samples"|"time">("samples");
+  const plotCount=labels?signal.count:signal.count+1;
+  const view = !labels?rawPlotRange(signal.count,range):range ? fitRange(...range, signal.count) : [0, Math.max(1, signal.count - 1)] as PlotRange;
   const [start, end] = view, span = end - start;
   const point = hover === null ? undefined : nearestPoint(signal.points, hover);
   const positionLabel = (index: number) => labels ? labels[Math.round(index)] || "" : formatValue(sampleTimeMs(index,signal.sps)) + " ms";
-  function zoom(factor: number) { onInspect?.(); const center = (start + end) / 2; setRange(fitRange(center - span * factor / 2, center + span * factor / 2, signal.count)); }
-  function pan(direction: number) { onInspect?.(); setRange(fitRange(start + span * direction / 2, end + span * direction / 2, signal.count)); }
+  function zoom(factor: number) { onInspect?.(); const center = (start + end) / 2; setRange(fitRange(center - span * factor / 2, center + span * factor / 2, plotCount)); }
+  function pan(direction: number) { onInspect?.(); setRange(fitRange(start + span * direction / 2, end + span * direction / 2, plotCount)); }
   useEffect(() => {
     const canvas = ref.current; if (!canvas) return;
     let frame = 0;
@@ -37,10 +39,10 @@ export default function RawCanvas({window: signal, unit = "V", labels, onInspect
         const index = start + (end - start) * i / 5, xx = x(index);
         ctx.beginPath(); ctx.moveTo(xx, TOP); ctx.lineTo(xx, h - BOTTOM); ctx.stroke();
         ctx.textAlign = i === 0 ? "left" : i === 5 ? "right" : "center";
-        ctx.fillText(labels ? labels[Math.round(index)] || "" : formatValue(sampleTimeMs(index,signal.sps)), xx, h - 17);
+        ctx.fillText(labels ? labels[Math.round(index)] || "" : (axis==="samples"?formatValue(index):formatValue(sampleTimeMs(index,signal.sps))), xx, h - 17);
       }
       ctx.textAlign = "left"; ctx.fillText(unit, 10, 14);
-      ctx.textAlign = "right"; ctx.fillText(labels ? "KST" : "ms", width - RIGHT, 14);
+      ctx.textAlign = "right"; ctx.fillText(labels ? "KST" : axis==="samples"?"샘플":"ms", width - RIGHT, 14);
       ctx.save(); ctx.beginPath(); ctx.rect(LEFT, TOP, width - LEFT - RIGHT, h - TOP - BOTTOM); ctx.clip();
       ctx.strokeStyle = "#4de1cb"; ctx.lineWidth = 1.6; ctx.beginPath();
       signal.points.forEach((p, i) => { if (i === 0) ctx.moveTo(x(p.index), y(p.value)); else ctx.lineTo(x(p.index), y(p.value)); }); ctx.stroke();
@@ -54,23 +56,25 @@ export default function RawCanvas({window: signal, unit = "V", labels, onInspect
     const draw = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(paint); };
     draw(); const resize = new ResizeObserver(draw); resize.observe(canvas);
     return () => { cancelAnimationFrame(frame); resize.disconnect(); };
-  }, [signal, start, end, lockedY, point, labels, unit, height]);
+  }, [signal, start, end, lockedY, point, labels, unit, height, axis]);
   return <div className="signal-instrument" ref={panel}>
     <div className="plot-controls" role="group" aria-label="그래프 보기 설정">
       <button onClick={() => zoom(.5)} disabled={span <= 1 || signal.count < 2} aria-label="시간축 확대">＋ 확대</button>
       <button onClick={() => zoom(2)} disabled={!range} aria-label="시간축 축소">− 축소</button>
       <button onClick={() => pan(-1)} disabled={start <= 0} aria-label="이전 구간">←</button>
-      <button onClick={() => pan(1)} disabled={end >= signal.count - 1} aria-label="다음 구간">→</button>
+      <button onClick={() => pan(1)} disabled={end >= plotCount - 1} aria-label="다음 구간">→</button>
       <button onClick={() => {setRange(null); setHover(null);}}>전체 구간</button>
+      {!labels&&<label>가로축<select aria-label="Raw 가로축 단위" value={axis} onChange={e=>setAxis(e.target.value as "samples"|"time")}><option value="samples">샘플 수</option><option value="time">시간 (ms)</option></select></label>}
       <label><input type="checkbox" checked={!lockedY} onChange={e => setLockedY(e.target.checked ? null : valueDomain(signal.points.filter(p=>p.index>=start&&p.index<=end)))}/>Y 자동 스케일</label>
       <button className="plot-expand" onClick={async () => {try { if (document.fullscreenElement) await document.exitFullscreen(); else await panel.current?.requestFullscreen(); } catch {setError("이 브라우저는 전체 화면을 지원하지 않습니다.");}}}>전체 화면</button>
     </div>
     <div className="plot-readout" aria-live="off">{point ? <><b>{labels ? "배치" : "샘플 인덱스"} #{point.index}</b><span>{positionLabel(point.index)}</span><strong>{formatValue(point.value)} {unit}</strong></> : <span>포인터를 올리거나 그래프에 초점을 맞추고 ← → 키로 값을 확인하세요.</span>}</div>
-    <canvas ref={ref} className="raw-canvas" tabIndex={0} role="img" aria-label={`${labels ? "대표값 추이" : "Raw Data"}: ${signal.count}개, 최소 ${formatValue(signal.min)}, 최대 ${formatValue(signal.max)} ${unit}. 방향키로 샘플 조회, 더하기/빼기로 확대·축소.`} style={{height}}
+    <canvas ref={ref} className="raw-canvas" tabIndex={0} role="img" aria-label={`${labels ? "대표값 추이" : "Raw Data"}: ${signal.count}개${labels?"":`, 가로축 0–${axis==="samples"?signal.count:sampleTimeMs(signal.count,signal.sps)} ${axis==="samples"?"샘플":"ms"}`}, 최소 ${formatValue(signal.min)}, 최대 ${formatValue(signal.max)} ${unit}. 방향키로 샘플 조회, 더하기/빼기로 확대·축소.`} style={{height}}
       onPointerMove={e => {const box = e.currentTarget.getBoundingClientRect(); setHover(Math.max(start, Math.min(end, start + (e.clientX - box.left - LEFT) / (box.width - LEFT - RIGHT) * span)));}}
       onPointerLeave={() => setHover(null)} onBlur={() => setHover(null)} onFocus={() => setHover(start)}
       onKeyDown={e => {if (e.key === "ArrowLeft" || e.key === "ArrowRight") {e.preventDefault(); const i = point ? signal.points.indexOf(point) : 0; const next = signal.points[Math.max(0, Math.min(signal.points.length - 1, i + (e.key === "ArrowRight" ? 1 : -1)))]; if (next) setHover(next.index);} else if (e.key === "+" || e.key === "=") {e.preventDefault(); zoom(.5);} else if (e.key === "-") {e.preventDefault(); zoom(2);}}}/>
-    <div className="plot-status"><span>{range ? (Math.max(1, signal.count - 1) / span).toFixed(1) + "× · " : ""}인덱스 {Math.ceil(start)}–{Math.min(signal.count - 1, Math.floor(end))}</span><span>MIN {formatValue(signal.min)} · MAX {formatValue(signal.max)} · Δ {formatValue(signal.max - signal.min)} {unit}</span></div>
+    {!labels&&<p className="plot-note">가로축: {axis==="samples"?`0–${signal.count.toLocaleString()} 샘플`:`0–${sampleTimeMs(signal.count,signal.sps).toLocaleString()} ms`} · 실제 샘플 인덱스 0–{Math.max(0,signal.count-1).toLocaleString()}</p>}
+    <div className="plot-status"><span>{range ? (Math.max(1, plotCount - 1) / span).toFixed(1) + "× · " : ""}인덱스 {Math.ceil(start)}–{Math.min(signal.count - 1, Math.floor(end))}</span><span>MIN {formatValue(signal.min)} · MAX {formatValue(signal.max)} · Δ {formatValue(signal.max - signal.min)} {unit}</span></div>
     {signal.max === signal.min && <p className="plot-note">이 배치의 모든 값이 동일합니다. 자동 스케일은 없는 변화를 만들지 않습니다.</p>}
     {signal.count > signal.points.length && <p className="plot-note">피크 보존 표시 · 호버는 표시된 실제 샘플의 인덱스·값입니다.</p>}
     {error && <p role="alert">{error}</p>}
