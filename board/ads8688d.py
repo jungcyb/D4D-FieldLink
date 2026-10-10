@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import queue
 import selectors
 import shutil
 import signal
@@ -17,6 +18,11 @@ import struct
 import time
 import uuid
 import zlib
+
+try:
+    from .nu40 import MAGIC as NU40_MAGIC
+except ImportError:
+    from nu40 import MAGIC as NU40_MAGIC
 
 try:
     import resource
@@ -53,10 +59,13 @@ MSG_READ_BACKLOG = 9
 MSG_READ_BACKLOG_V2 = 10
 MSG_STREAM_START_V2 = 11
 MSG_SET_RATE_GROUP = 12
+MSG_STREAM_START_V3 = 13
+MSG_READ_BACKLOG_V3 = 14
 MSG_LIVE_DATA = 0x0100
 MSG_ARCHIVE_DATA = 0x0101
 MSG_ARCHIVE_DATA_V2 = 0x0102
 MSG_LIVE_DATA_V2 = 0x0103
+MSG_ANOMALY_EVENT = 0x0104
 MSG_RESPONSE = 0x8000
 MSG_ERROR = 0xFFFF
 
@@ -68,7 +77,9 @@ MIN_SCAN_RATE = 10
 MAX_SCAN_RATE = 2000
 
 
-def channel_capabilities(scan_rate: int) -> dict[str, object]:
+def channel_capabilities(scan_rate: int, nu40: dict | None = None) -> dict[str, object]:
+    nu40 = nu40 or {}
+    nu40_rate = nu40.get('rate_hz', 104)
     channels = [
         {
             "id": f"CH{channel}",
@@ -82,28 +93,10 @@ def channel_capabilities(scan_rate: int) -> dict[str, object]:
         }
         for channel in range(8)
     ]
-    channels += [
-        {
-            "id": "ADS1263-AIN0_AIN1",
-            "label": "ADS1263 AIN0–AIN1",
-            "adc": "ADS1263",
-            "adcChannel": "AIN0-AIN1",
-            "sampleRateHz": 400,
-            "inputUnit": "code",
-            "rateGroupId": "ads1263.adc1",
-            "streamAvailable": False,
-        },
-        {
-            "id": "ADS1263-AIN6_AIN7",
-            "label": "ADS1263 AIN6–AIN7",
-            "adc": "ADS1263",
-            "adcChannel": "AIN6-AIN7",
-            "sampleRateHz": 10,
-            "inputUnit": "code",
-            "rateGroupId": "ads1263.adc2",
-            "streamAvailable": False,
-        },
-    ]
+    channels += [dict(id=f'CH{i + 8}', label=f'NU40 Accel {axis}', adc='NU40',
+                     adcChannel=axis, sampleRateHz=nu40_rate, inputUnit='g',
+                     rateGroupId='nu40.xyz', streamAvailable=nu40.get('state') == 'streaming')
+                 for i, axis in enumerate('XYZ')]
     return {
         "schemaVersion": 1,
         "channelCount": len(channels),
@@ -119,26 +112,14 @@ def channel_capabilities(scan_rate: int) -> dict[str, object]:
                 "maxHz": MAX_SCAN_RATE,
                 "stepHz": 1,
             },
-            {
-                "id": "ads1263.adc1",
-                "label": "ADS1263 ADC1",
-                "channelIds": ["ADS1263-AIN0_AIN1"],
-                "currentHz": 400,
-                "writable": False,
-            },
-            {
-                "id": "ads1263.adc2",
-                "label": "ADS1263 ADC2",
-                "channelIds": ["ADS1263-AIN6_AIN7"],
-                "currentHz": 10,
-                "writable": False,
-            },
+            dict(id='nu40.xyz', label='NU40 XYZ 공통', channelIds=['CH8', 'CH9', 'CH10'],
+                 currentHz=nu40_rate, writable=False),
         ],
     }
 
 
-def discovery_capabilities(scan_rate: int) -> dict[str, object]:
-    capabilities = channel_capabilities(scan_rate)
+def discovery_capabilities(scan_rate: int, nu40: dict | None = None) -> dict[str, object]:
+    capabilities = channel_capabilities(scan_rate, nu40)
     return {
         "schemaVersion": capabilities["schemaVersion"],
         "channelCount": capabilities["channelCount"],
@@ -483,6 +464,22 @@ class Server:
         self.report_invalid = 0
         self.report_gaps = 0
         self.last_report = time.monotonic()
+        self.nu40_status = {'state': 'disconnected', 'rate_hz': 104}
+        self.nu40_receiver = None
+        self.nu40_frames = 0
+
+    def _nu40_read(self):
+        for event in self.nu40_receiver.drain():
+            self.nu40_status = event['status']
+            for frame in event.get('frames', []):
+                self._publish_frame(frame, nu40=True)
+                self.nu40_frames += 1
+            anomaly = self.nu40_status.get('anomaly')
+            if anomaly and event.get('frames'):
+                message = make_message(MSG_ANOMALY_EVENT, 0, json_bytes(anomaly))
+                for stream, client in tuple(self.clients.items()):
+                    if client.streaming == 3:
+                        self._queue(stream, message)
 
     def stop(self, *_args) -> None:
         self.running = False
@@ -524,7 +521,10 @@ class Server:
             "hostname": socket.gethostname(),
             "acquiring": self.acquiring,
             "scan_rate_hz": self.scan_rate,
-            "channel_capabilities": channel_capabilities(self.scan_rate),
+            "channel_capabilities": channel_capabilities(self.scan_rate, self.nu40_status),
+            "nu40": self.nu40_status,
+            "nu40_frames_total": self.nu40_frames,
+            "anomaly": self.nu40_status.get('anomaly'),
             "frames_total": self.frames_total,
             "invalid_total": self.invalid_total,
             "sequence_gaps_total": self.gaps_total,
@@ -556,12 +556,12 @@ class Server:
             self._response(stream, message_type, request_id, {
                 "protocol_version": PROTOCOL_VERSION,
                 "uuid": str(self.identity),
-                "model": "AM6442-SK+ADS8688+ADS1263",
+                "model": "AM6442-SK+ADS8688+NU40",
                 "capabilities": [
                     "acquisition_control", "sample_rate", "live_stream",
-                    "local_ring", "backlog_replay", "timestamped_stream",
+                    "local_ring", "backlog_replay", "timestamped_stream", "mixed_stream_v3",
                 ],
-                "channel_capabilities": channel_capabilities(self.scan_rate),
+                "channel_capabilities": channel_capabilities(self.scan_rate, self.nu40_status),
             })
         elif message_type == MSG_STATUS:
             self._response(stream, message_type, request_id, self._status())
@@ -571,6 +571,9 @@ class Server:
         elif message_type == MSG_STREAM_START_V2:
             client.streaming = 2
             self._response(stream, message_type, request_id, {"streaming": True, "timestamps": "unix_ns"})
+        elif message_type == MSG_STREAM_START_V3:
+            client.streaming = 3
+            self._response(stream, message_type, request_id, {"streaming": True, "formats": ['ADS8', 'NU40']})
         elif message_type == MSG_STREAM_STOP:
             client.streaming = 0
             self._response(stream, message_type, request_id, {"streaming": False})
@@ -604,7 +607,7 @@ class Server:
             self._send_control(stream, message_type, request_id, CONTROL_SET_RATE, rate)
         elif message_type == MSG_ARCHIVE_INFO:
             self._response(stream, message_type, request_id, self.ring.info())
-        elif message_type in (MSG_READ_BACKLOG, MSG_READ_BACKLOG_V2):
+        elif message_type in (MSG_READ_BACKLOG, MSG_READ_BACKLOG_V2, MSG_READ_BACKLOG_V3):
             if len(payload) != 12:
                 self._error(stream, request_id, "READ_BACKLOG payload must be uint64,uint32")
                 return
@@ -614,12 +617,15 @@ class Server:
             returned = 0
             last_record = after_record
             for record_id, received_ns, frame in self.ring.read_after(after_record, limit):
+                last_record = record_id
+                if message_type != MSG_READ_BACKLOG_V3 and FRAME.unpack(frame)[0] == NU40_MAGIC:
+                    continue
                 self._queue(
                     stream,
                     make_message(
-                        MSG_ARCHIVE_DATA_V2 if message_type == MSG_READ_BACKLOG_V2 else MSG_ARCHIVE_DATA,
+                        MSG_ARCHIVE_DATA if message_type == MSG_READ_BACKLOG else MSG_ARCHIVE_DATA_V2,
                         request_id,
-                        (struct.pack("!QQ", record_id, received_ns) if message_type == MSG_READ_BACKLOG_V2 else struct.pack("!Q", record_id)) + frame,
+                        (struct.pack("!Q", record_id) if message_type == MSG_READ_BACKLOG else struct.pack("!QQ", record_id, received_ns)) + frame,
                     ),
                 )
                 returned += 1
@@ -680,10 +686,18 @@ class Server:
             self.selector.modify(stream, selectors.EVENT_READ, "client")
 
     def _rpmsg_read(self) -> None:
-        try:
-            packet = os.read(self.rpmsg, 496)
-        except BlockingIOError:
-            return
+        # Drain a bounded burst: one packet per select starves live capture while
+        # a client is replaying large archive pages. Keep other sources responsive.
+        for _ in range(64):
+            try:
+                packet = os.read(self.rpmsg, 496)
+            except BlockingIOError:
+                break
+            if not packet:
+                break
+            self._rpmsg_packet(packet)
+
+    def _rpmsg_packet(self, packet: bytes) -> None:
         if packet == b"ADS8OK":
             return
         if valid_control(packet):
@@ -703,10 +717,17 @@ class Server:
                 self.acquiring = False
             elif message_type in (MSG_SET_RATE, MSG_SET_RATE_GROUP):
                 self.scan_rate = value
+            if message_type in (MSG_ACQ_START, MSG_ACQ_STOP) and self.nu40_receiver:
+                try:
+                    self.nu40_receiver.commands.put_nowait({'acquiring': self.acquiring})
+                except queue.Full:
+                    self._error(stream, request_id, 'ADS8688 applied, NU40 control queue full; inspect STATUS')
+                    return
             self._response(stream, message_type, request_id, {
                 "acquiring": self.acquiring,
                 "scan_rate_hz": value,
-                "channel_capabilities": channel_capabilities(self.scan_rate),
+                "channel_capabilities": channel_capabilities(self.scan_rate, self.nu40_status),
+                "nu40": self.nu40_status,
             })
             return
         if not valid_frame(packet):
@@ -722,18 +743,21 @@ class Server:
             self.gaps_total += gap
             self.report_gaps += gap
         self.last_sequence = sequence
+        self.frames_total += 1
+        self.report_frames += 1
+        self._publish_frame(packet)
+
+    def _publish_frame(self, packet: bytes, nu40=False):
         try:
             record_id, received_ns = self.ring.append(packet)
         except OSError as error:
             print(f"storage write failed: {error}", flush=True)
             return
-        self.frames_total += 1
-        self.report_frames += 1
         message = make_message(MSG_LIVE_DATA, 0, struct.pack("!Q", record_id) + packet)
         message_v2 = make_message(MSG_LIVE_DATA_V2, 0, struct.pack("!QQ", record_id, received_ns) + packet)
         for stream, client in tuple(self.clients.items()):
-            if client.streaming:
-                self._queue(stream, message_v2 if client.streaming == 2 else message)
+            if client.streaming and (not nu40 or client.streaming == 3):
+                self._queue(stream, message_v2 if client.streaming >= 2 else message)
 
     def _udp_read(self) -> None:
         try:
@@ -746,9 +770,9 @@ class Server:
         if magic != b"A8DQ" or version not in (1, DISCOVERY_VERSION):
             return
         hostname = socket.gethostname().encode("utf-8")[:63]
-        model = b"AM6442-SK+ADS8688+ADS1263"
+        model = b"AM6442-SK+ADS8688+NU40"
         if version == DISCOVERY_VERSION:
-            capabilities = json_bytes(discovery_capabilities(self.scan_rate))
+            capabilities = json_bytes(discovery_capabilities(self.scan_rate, self.nu40_status))
             response = DISCOVERY_RESPONSE_V2.pack(
                 b"A8DR", DISCOVERY_VERSION, 0, nonce, self.identity.bytes,
                 self.args.port, len(hostname), len(model), len(capabilities),
@@ -780,6 +804,11 @@ class Server:
         self.selector.register(self.rpmsg, selectors.EVENT_READ, "rpmsg")
         self.selector.register(self.tcp, selectors.EVENT_READ, "server")
         self.selector.register(self.udp, selectors.EVENT_READ, "udp")
+        if not getattr(self.args, 'no_nu40', False):
+            from nu40_ble import Receiver
+            self.nu40_receiver = Receiver(self.identity)
+            self.selector.register(self.nu40_receiver.reader, selectors.EVENT_READ, 'nu40')
+            self.nu40_receiver.start()
         print(
             f"ads8688d uuid={self.identity} device={device} "
             f"tcp={self.args.port} udp={self.args.discovery_port}",
@@ -793,6 +822,8 @@ class Server:
                         self._rpmsg_read()
                     elif key.data == "udp":
                         self._udp_read()
+                    elif key.data == 'nu40':
+                        self._nu40_read()
                     elif key.data == "server":
                         stream, address = self.tcp.accept()
                         stream.setblocking(False)
@@ -823,6 +854,8 @@ class Server:
                     self.report_frames = self.report_invalid = self.report_gaps = 0
                     self.last_report = now
         finally:
+            if self.nu40_receiver:
+                self.nu40_receiver.close()
             for stream in tuple(self.clients):
                 self._disconnect(stream, "service stopping")
             self.selector.close()
@@ -835,6 +868,7 @@ class Server:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=Path)
+    parser.add_argument('--no-nu40', action='store_true', help='disable BLE receiver (ADS8688 remains available)')
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--discovery-port", type=int, default=8764)
     parser.add_argument("--data-dir", type=Path, default=Path("/var/lib/ads8688/data"))

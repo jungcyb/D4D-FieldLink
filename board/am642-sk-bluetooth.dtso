@@ -1,0 +1,43 @@
+/dts-v1/;
+/plugin/;
+
+/* SK-AM64B WL1837 UART4 wiring. No change to J9 MCU_SPI0 or WLAN/SDIO.
+ * Reference: TI k3-am642-sk.dts UART4 Bluetooth enablement, PROC100A schematic.
+ * Build: dtc -@ -I dts -O dtb -o am642-sk-bluetooth.dtbo am642-sk-bluetooth.dtso
+ * Apply offline with fdtoverlay to a BACKUP of the boot DTB; reboot required.
+ */
+&main_pmx0 {
+    fieldlink_bt_uart: fieldlink-bt-uart {
+        pinctrl-single,pins = <
+            0x250 0x50001 /* UART4_RXD: input, pull disabled, mux 1 */
+            0x254 0x10001 /* UART4_TXD: output, pull disabled, mux 1 */
+            0x064 0x50002 /* UART4_CTS: input, pull disabled, mux 2 */
+            0x07c 0x10002 /* UART4_RTS: output, pull disabled, mux 2 */
+            0x0c8 0x10007 /* GPIO0_49 BT_EN */
+        >;
+    };
+    fieldlink_bt_select: fieldlink-bt-select {
+        pinctrl-single,pins = <0x100 0x10007>; /* GPIO0_63 BTUART_RTS_SEL */
+    };
+};
+
+&main_gpio0 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&fieldlink_bt_select>;
+    fieldlink-btuart-select {
+        gpio-hog;
+        gpios = <63 0>;
+        output-high;
+        line-name = "btuart_rts_sel";
+    };
+};
+
+&main_uart4 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&fieldlink_bt_uart>;
+    status = "okay";
+    bluetooth {
+        compatible = "ti,wl1835-st";
+        enable-gpios = <&main_gpio0 49 0>;
+    };
+};

@@ -55,6 +55,12 @@ mcspi1.MCU_SPI.$assign       = "MCU_SPI0";
 mcspi1.mcspiChannel[0].$name = "CONFIG_MCSPI_CH0";
 mcspi1.mcspiChannel[0].frameFormat = "POL0_PHA1";
 mcspi1.mcspiChannel[0].bitRate = 12500000;
+/* Weak idle bias only; the SPI peripheral still drives CLK/D0/CS normally.
+ * D1 is high impedance between frames. Active-low CS and RESET stay high. */
+mcspi1.MCU_SPI.CLK.pu_pd = "pd";
+mcspi1.MCU_SPI.D0.pu_pd = "pd";
+mcspi1.MCU_SPI.D1.pu_pd = "pd";
+mcspi1.mcspiChannel[0].MCU_CSn.pu_pd = "pu";
 
 ipc.enableLinuxIpc = true;
 ipc.r5fss0_0 = "notify_rpmsg";
@@ -67,6 +73,7 @@ gpio1.$name                    = "ADS8688_RESET";
 gpio1.pinDir                   = "OUTPUT";
 gpio1.MCU_GPIO.$assign         = "MCU_GPIO0";
 gpio1.MCU_GPIO.gpioPin.$assign = "MCU_SPI1_CLK";
+gpio1.MCU_GPIO.gpioPin.pu_pd = "pu";
 
 addr_translate1.$name     = "CONFIG_ADDR_TRANSLATE_REGION0";
 addr_translate1.localAddr = 0x80000000;

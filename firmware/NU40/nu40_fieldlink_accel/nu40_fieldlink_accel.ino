@@ -632,7 +632,9 @@ void scanCallback(ble_gap_evt_adv_report_t* report) {
   memcpy(lastSeenName, name, sizeof(lastSeenName));
   memcpy(lastSeenAddr, report->peer_addr.addr, 6);
 #endif
-  if (avoided || !named) {
+  // BlueZ may place LocalName in a separate scan-response. The primary packet
+  // still carries NUS, so accept an absent name but reject a conflicting one.
+  if (avoided || (name[0] != '\0' && !named)) {
     Bluefruit.Scanner.resume();
     return;
   }
