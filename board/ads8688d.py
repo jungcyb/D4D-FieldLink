@@ -499,7 +499,7 @@ class Server:
                 self._publish_frame(frame, nu40=True)
                 self.nu40_frames += 1
             anomaly = self.nu40_status.get('anomaly')
-            if anomaly and event.get('frames'):
+            if anomaly and event.get('anomaly_changed'):
                 message = make_message(MSG_ANOMALY_EVENT, 0, json_bytes(anomaly))
                 for stream, client in tuple(self.clients.items()):
                     if client.streaming == 3:

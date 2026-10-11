@@ -8,7 +8,7 @@ import {createServer} from "node:http";
 import {FileRepository} from "../lib/server/repository.ts";
 import {MaintenanceService} from "../lib/server/service.ts";
 import {RagService,ragConfig} from "../lib/server/rag.ts";
-import {clikaBaseUrl,clikaStatus} from "../lib/server/clika.ts";
+import {clikaBaseUrl,clikaFetch,clikaStatus} from "../lib/server/clika.ts";
 import {retrieve} from "../lib/server/retrieval.ts";
 import {restoreSession,emptySession} from "../lib/chat-session.ts";
 import type {RagHistoryMessage} from "../lib/rag-types.ts";
@@ -16,7 +16,7 @@ import {ApiError} from "../lib/server/validation.ts";
 
 const uuid="11111111-2222-4333-8444-555555555555";
 function setup(t:TestContext){
-  const keys=["RAG_BACKEND","RAG_API_URL","CLIKA_BASE_URL","CLIKA_MODEL","CLIKA_API_TOKEN","CLIKA_CHAT_TIMEOUT_MS","CLIKA_CHAT_MAX_TOKENS","CLIKA_CHAT_MAX_INPUT_CHARS","CLIKA_ALLOWED_HOSTS","CLIKA_CHAT_CONTEXT_TOKENS","CLIKA_RAG_TOP_K"];
+  const keys=["RAG_BACKEND","RAG_API_URL","CLIKA_BASE_URL","CLIKA_FALLBACK_BASE_URL","CLIKA_MODEL","CLIKA_API_TOKEN","CLIKA_FAILOVER_TIMEOUT_MS","CLIKA_CHAT_TIMEOUT_MS","CLIKA_CHAT_MAX_TOKENS","CLIKA_CHAT_MAX_INPUT_CHARS","CLIKA_ALLOWED_HOSTS","CLIKA_CHAT_CONTEXT_TOKENS","CLIKA_RAG_TOP_K"];
   const old=keys.map(key=>process.env[key]);t.after(()=>keys.forEach((key,i)=>{if(old[i]===undefined)delete process.env[key];else process.env[key]=old[i];}));keys.forEach(key=>delete process.env[key]);
   process.env.RAG_BACKEND="clika";process.env.CLIKA_BASE_URL="http://127.0.0.1:8000/v1";
   const directory=mkdtempSync(join(tmpdir(),"fieldlink-clika-test-"));t.after(()=>rmSync(directory,{recursive:true,force:true}));
@@ -58,7 +58,19 @@ test("missing and ambiguous models require selection; status detects sole model"
 });
 
 test("provider selection, local-only destination and inference settings are preserved",t=>{
-  setup(t);assert.equal(ragConfig().provider,"clika");assert.equal(ragConfig().timeoutMs,120000);delete process.env.RAG_BACKEND;process.env.RAG_API_URL="http://127.0.0.1:8100/query";assert.equal(ragConfig().provider,"rag");delete process.env.RAG_API_URL;assert.equal(ragConfig().provider,"clika");process.env.CLIKA_BASE_URL="http://localhost:8000";assert.equal(clikaBaseUrl(),"http://localhost:8000/v1");process.env.CLIKA_BASE_URL="https://public.example/v1";assert.throws(()=>clikaBaseUrl(),/폐쇄망/);process.env.CLIKA_CHAT_TIMEOUT_MS="NaN";assert.throws(()=>ragConfig(),/CLIKA_CHAT_TIMEOUT_MS/);
+  setup(t);assert.equal(ragConfig().provider,"clika");assert.equal(ragConfig().timeoutMs,120000);delete process.env.RAG_BACKEND;process.env.RAG_API_URL="http://127.0.0.1:8100/query";assert.equal(ragConfig().provider,"rag");delete process.env.RAG_API_URL;assert.equal(ragConfig().provider,"clika");process.env.CLIKA_BASE_URL="http://localhost:8000";assert.equal(clikaBaseUrl(),"http://localhost:8000/v1");process.env.CLIKA_BASE_URL="http://198.168.0.131:8000/v1";process.env.CLIKA_ALLOWED_HOSTS="198.168.0.131";assert.equal(clikaBaseUrl(),process.env.CLIKA_BASE_URL);process.env.CLIKA_BASE_URL="https://public.example/v1";assert.throws(()=>clikaBaseUrl(),/폐쇄망/);process.env.CLIKA_CHAT_TIMEOUT_MS="NaN";assert.throws(()=>ragConfig(),/CLIKA_CHAT_TIMEOUT_MS/);
+});
+
+test("network failure falls back to the on-device CLIKA server",async t=>{
+  const {rag}=setup(t);process.env.CLIKA_BASE_URL="http://198.168.0.131:8000/v1";process.env.CLIKA_FALLBACK_BASE_URL="http://127.0.0.1:8000/v1";process.env.CLIKA_ALLOWED_HOSTS="198.168.0.131";process.env.CLIKA_MODEL="local";const calls:string[]=[];
+  const result=await rag.query({daqUuid:uuid,question:"상태?"},(async(url,options)=>{const value=String(url);calls.push(value);if(value.includes("198.168.0.131"))throw new Error("network unreachable");if(value.endsWith("/count_tokens"))return Response.json({input_tokens:tokens(JSON.parse(String(options?.body)))});return reply();}) as typeof fetch);
+  assert.equal(result.model,"local-model");assert.ok(calls.some(url=>url.startsWith("http://198.168.0.131")));assert.ok(calls.some(url=>url.startsWith("http://127.0.0.1")));
+});
+
+test("selected CLIKA server keeps the full generation timeout",async t=>{
+  setup(t);process.env.CLIKA_BASE_URL="http://192.168.0.131:8000/v1";process.env.CLIKA_FALLBACK_BASE_URL="http://127.0.0.1:8000/v1";const signal=new AbortController().signal,signals:(AbortSignal|null|undefined)[]=[];
+  const fetcher=clikaFetch((async(_url,options)=>{signals.push(options?.signal);return Response.json({});}) as typeof fetch);
+  await fetcher("http://192.168.0.131:8000/v1/models",{signal});await fetcher("http://192.168.0.131:8000/v1/chat/completions",{signal});assert.notEqual(signals[0],signal);assert.equal(signals[1],signal);
 });
 
 test("long history is trimmed without modifying browser history; long question asks for splitting",async t=>{
@@ -83,6 +95,7 @@ test("lexical retrieval prioritizes requested logs and excludes out-of-scope sen
 test("absent token route uses explicit conservative fallback; invalid count is an error",async t=>{
   const {rag}=setup(t);process.env.CLIKA_MODEL="local";
   const result=await rag.query({daqUuid:uuid,question:"진동?"},(async(url)=>String(url).endsWith("/count_tokens")?new Response("",{status:404}):reply()) as typeof fetch);assert.equal(result.retrieval!.tokenCount,"estimate");assert.ok(result.retrieval!.inputTokens<=result.retrieval!.inputBudget);
+  const unreachable=await rag.query({daqUuid:uuid,question:"진동?"},(async(url)=>{if(String(url).endsWith("/count_tokens"))throw new Error("unreachable");return reply();}) as typeof fetch);assert.equal(unreachable.retrieval!.tokenCount,"estimate");
   await assert.rejects(rag.query({daqUuid:uuid,question:"상태?"},(async()=>Response.json({input_tokens:"invalid"})) as typeof fetch),(e:unknown)=>e instanceof ApiError&&e.code==="CLIKA_TOKEN_COUNT_FAILED");
   await assert.rejects(rag.query({daqUuid:uuid,question:"상태?"},(async()=>new Response("",{status:401})) as typeof fetch),/토큰 계산 실패/);
 });

@@ -91,6 +91,7 @@ class RmsDetector:
 
     def update(self, xyz, at_ms):
         self.last_ms = at_ms
+        changed = False
         for c, raw in zip(self.axes, xyz):
             value = raw * G_PER_LSB
             if not self.count:
@@ -109,7 +110,9 @@ class RmsDetector:
             if state != previous:
                 c['state'], c['changed_unix_ms'] = state, at_ms
                 c['events'] += int(state in ('warning', 'alarm') and previous not in ('warning', 'alarm'))
+                changed = True
         self.count += 1
+        return changed
 
     def snapshot(self):
         return dict(method='rms_sta_lta', unit='g', short_tau_s=self.short_tau, long_tau_s=self.long_tau,
@@ -213,17 +216,18 @@ class Link:
                 self.filter = MedianMovingAverage()
                 self.detector = RmsDetector(rate)
             frames = []
+            anomaly_changed = False
             for i in range(count):
                 xyz = struct.unpack_from('<3h', p, 20 + i * 6)
                 at_us = round(self.next_us + i * 1e6 / rate)
                 # Match the ESP gateway: anomaly sees raw vibration energy;
                 # stored/streamed channels see median(10) -> moving average(10).
-                self.detector.update(xyz, at_us // 1000)
+                anomaly_changed = self.detector.update(xyz, at_us // 1000) or anomaly_changed
                 xyz = self.filter.update(xyz)
                 frame = FRAME.pack(MAGIC, 1, 28, (seq + i) & 0xffffffff, at_us, rate, 3, 2, *xyz, 0, 0, 0, 0, 0, 0)
                 frames.append(frame[:-4] + struct.pack('<I', zlib.crc32(frame[:-4])))
             self.next_us += count * 1e6 / rate
             self.next_seq = (seq + count) & 0xffffffff
             self.state = 'streaming'
-            self.emit({'frames': frames, 'status': self.status()})
+            self.emit({'frames': frames, 'status': self.status(), 'anomaly_changed': anomaly_changed})
         self.last_rx = time.monotonic()

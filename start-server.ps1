@@ -58,7 +58,12 @@ Assert-FieldlinkPortAvailable -ServerPort $Port
 
 $collector = $null
 if (-not $DashboardOnly) {
-  $collector = Start-Process -FilePath $nodePath -ArgumentList (Join-Path $repoRoot 'integration\collector.mjs') -WorkingDirectory $repoRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDirectory 'collector.out.log') -RedirectStandardError (Join-Path $logDirectory 'collector.err.log') -PassThru
+  $collectorPath = Join-Path $repoRoot 'integration\collector.mjs'
+  Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match '[\\/]integration[\\/]collector\.mjs(?:\s|$)' } | ForEach-Object {
+    Write-Host "Stopping orphaned collector PID $($_.ProcessId)..."
+    Stop-Process -Id $_.ProcessId -Force
+  }
+  $collector = Start-Process -FilePath $nodePath -ArgumentList $collectorPath -WorkingDirectory $repoRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDirectory 'collector.out.log') -RedirectStandardError (Join-Path $logDirectory 'collector.err.log') -PassThru
 }
 Write-Host "FIELDLINK server: http://localhost:$Port (LAN: http://<server-ip>:$Port)"
 if ($collector) { Write-Host "Collector log: $logDirectory\collector.out.log" } else { Write-Host 'Collector disabled for this run.' }

@@ -44,6 +44,7 @@ class Nu40Tests(unittest.TestCase):
         data = lambda seq: struct.pack('<IQIBBBB6h', seq, 0, 104, 2, 3, 2, 0, -16384, 0, 16384, -1, 2, 3)
         link.receive(packet(0x30, data(100)), 1760000000000000000)
         frames = events[-1]['frames']
+        self.assertFalse(events[-1]['anomaly_changed'])
         self.assertEqual(len(frames), 2)
         fields = FRAME.unpack(frames[0])
         self.assertEqual(fields[0], MAGIC)
@@ -63,8 +64,8 @@ class Nu40Tests(unittest.TestCase):
 
     def test_rms_scores_each_axis_without_gravity_alarm(self):
         rms = RmsDetector(104)
-        for i in range(1200):
-            rms.update((0, 0, 16384), i)
+        changes = [rms.update((0, 0, 16384), i) for i in range(1200)]
+        self.assertEqual(changes.count(True), 1)
         self.assertEqual([c['state'] for c in rms.snapshot()['channels']], ['normal'] * 3)
         for i in range(50):
             rms.update((round(8000 * math.sin(i)), 0, 16384), i + 1200)

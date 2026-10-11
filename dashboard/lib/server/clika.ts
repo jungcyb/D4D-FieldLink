@@ -2,10 +2,10 @@ import type {RagEnvelope,RagHistoryMessage,RagRetrieval} from "../rag-types.ts";
 import {check,object,text,ApiError} from "./validation.ts";
 import {packClikaPrompt} from "./clika-prompt.ts";
 
-/** Server-owned inference destination. Never accept a URL from chat input. */
-export function clikaBaseUrl():string {
+/** Server-owned inference destinations. Never accept a URL from chat input. */
+function clikaUrl(raw:string):string {
   let url:URL;
-  try { url=new URL(process.env.CLIKA_BASE_URL||"http://127.0.0.1:8000/v1"); }
+  try { url=new URL(raw); }
   catch { throw new ApiError(503,"CLIKA_BASE_URL 주소 형식이 올바르지 않습니다.","CLIKA_NOT_CONFIGURED"); }
   const host=url.hostname.replace(/^\[|\]$/g,"").toLowerCase(),octets=host.split(".").map(Number);
   const privateIPv4=octets.length===4&&octets.every(n=>Number.isInteger(n)&&n>=0&&n<=255)&&(octets[0]===127||octets[0]===10||octets[0]===192&&octets[1]===168||octets[0]===172&&octets[1]>=16&&octets[1]<=31);
@@ -16,16 +16,41 @@ export function clikaBaseUrl():string {
   return url.pathname==="/"?`${base}/v1`:base;
 }
 
+export function clikaBaseUrls():string[]{
+  const urls=[process.env.CLIKA_BASE_URL||"http://127.0.0.1:8000/v1",process.env.CLIKA_FALLBACK_BASE_URL].filter((url):url is string=>!!url?.trim()).map(clikaUrl);
+  return [...new Set(urls)];
+}
+
+export function clikaBaseUrl():string{return clikaBaseUrls()[0];}
+
+/** Retry network failures against the configured local fallback. */
+export function clikaFetch(fetcher:typeof fetch=fetch):typeof fetch {
+  const bases=clikaBaseUrls(),primary=bases[0];let preferred:number|null=null;
+  return (async(input:RequestInfo|URL,init?:RequestInit)=>{
+    const raw=typeof input==="string"?input:input instanceof URL?input.toString():input.url;
+    if(bases.length===1||!(raw===primary||raw.startsWith(`${primary}/`))||input instanceof Request)return fetcher(input,init);
+    const suffix=raw.slice(primary.length),originalSignal=init?.signal;let lastError:unknown;
+    if(preferred!==null)return fetcher(`${bases[preferred]}${suffix}`,init);
+    for(let index=0;index<bases.length;index++){
+      const base=bases[index],attempt=AbortSignal.timeout(clikaFailoverTimeoutMs());
+      try{const response=await fetcher(`${base}${suffix}`,{...init,signal:originalSignal?AbortSignal.any([originalSignal,attempt]):attempt});preferred=index;return response;}
+      catch(error){lastError=error;if(originalSignal?.aborted)throw error;}
+    }
+    throw lastError;
+  }) as typeof fetch;
+}
+
 function setting(key:string,fallback:number,min:number,max:number){
   const value=Number(process.env[key]||fallback);
   check(Number.isInteger(value)&&value>=min&&value<=max,`${key}는 ${min}~${max} 정수여야 합니다.`,503,"CLIKA_NOT_CONFIGURED");
   return value;
 }
 export const clikaTimeoutMs=()=>setting("CLIKA_CHAT_TIMEOUT_MS",120000,1000,300000);
+export const clikaFailoverTimeoutMs=()=>setting("CLIKA_FAILOVER_TIMEOUT_MS",30000,1000,120000);
 const headers=():Record<string,string>=>process.env.CLIKA_API_TOKEN?{Authorization:`Bearer ${process.env.CLIKA_API_TOKEN}`}:{ };
 
 async function modelList(fetcher:typeof fetch,signal?:AbortSignal):Promise<string[]>{
-  const timeout=AbortSignal.timeout(5000),combined=signal?AbortSignal.any([timeout,signal]):timeout;
+  const timeout=AbortSignal.timeout(clikaFailoverTimeoutMs()*clikaBaseUrls().length+1000),combined=signal?AbortSignal.any([timeout,signal]):timeout;
   const response=await fetcher(`${clikaBaseUrl()}/models`,{headers:headers(),signal:combined,redirect:"error"});
   check(response.ok,`CLIKA 모델 조회 실패 (${response.status}). /v1/models 경로와 인증 설정을 확인하세요.`,502,"CLIKA_MODEL_QUERY_FAILED");
   const reader=response.body?.getReader();check(reader,"CLIKA 모델 목록이 비어 있습니다.",502,"CLIKA_INVALID_RESPONSE");
@@ -40,15 +65,15 @@ async function modelList(fetcher:typeof fetch,signal?:AbortSignal):Promise<strin
 }
 
 export async function clikaStatus(fetcher:typeof fetch=fetch){
-  try{const models=await modelList(fetcher),configured=process.env.CLIKA_MODEL?.trim();return{online:true,model:configured||(models.length===1?models[0]:null),models,message:models.length===1||configured?"CLIKA 로컬 추론 서버 응답 확인":"CLIKA_MODEL에 사용할 모델 ID를 지정해 주세요."};}
-  catch(error){return{online:false,model:process.env.CLIKA_MODEL||null,models:[],message:error instanceof ApiError?error.message:"CLIKA 로컬 추론 서버에 연결할 수 없습니다."};}
+  try{const models=await modelList(clikaFetch(fetcher)),configured=process.env.CLIKA_MODEL?.trim();return{online:true,model:configured||(models.length===1?models[0]:null),models,message:models.length===1||configured?"CLIKA 추론 서버 응답 확인":"CLIKA_MODEL에 사용할 모델 ID를 지정해 주세요."};}
+  catch(error){return{online:false,model:process.env.CLIKA_MODEL||null,models:[],message:error instanceof ApiError?error.message:"CLIKA 추론 서버에 연결할 수 없습니다."};}
 }
 
 async function resolveModel(fetcher:typeof fetch,signal:AbortSignal){
   const configured=process.env.CLIKA_MODEL?.trim();if(configured)return text(configured,"CLIKA_MODEL",200);
   let models:string[];
   try{models=await modelList(fetcher,signal);}
-  catch(error){if(signal.aborted)throw error;if(error instanceof ApiError)throw error;throw new ApiError(502,"CLIKA 모델 목록에 연결할 수 없습니다. localhost:8000 서버 실행 상태를 확인하세요.","CLIKA_MODEL_QUERY_FAILED");}
+  catch(error){if(signal.aborted)throw error;if(error instanceof ApiError)throw error;throw new ApiError(502,"CLIKA 모델 목록에 연결할 수 없습니다. 기본·폴백 서버 주소와 실행 상태를 확인하세요.","CLIKA_MODEL_QUERY_FAILED");}
   check(models.length===1,models.length?"CLIKA 모델이 여러 개입니다. /api/clika/status에서 ID를 확인하고 CLIKA_MODEL을 지정하세요.":"CLIKA 서버에 로드된 모델이 없습니다.",503,"CLIKA_MODEL_REQUIRED");
   return models[0];
 }

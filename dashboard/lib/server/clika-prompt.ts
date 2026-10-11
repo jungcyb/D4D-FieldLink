@@ -20,7 +20,9 @@ export async function packClikaPrompt(envelope:RagEnvelope,question:string,histo
   const count=async(rows:Message[])=>{
     const estimate=()=>new TextEncoder().encode(rows.map(row=>row.content).join("\n")).byteLength+128+rows.length*16;
     if(mode==="estimate")return estimate();
-    const timeout=AbortSignal.timeout(5000),response=await fetcher(`${limits.base}/messages/count_tokens`,{method:"POST",headers:{"Content-Type":"application/json",...(limits.token?{Authorization:`Bearer ${limits.token}`}:{})},body:JSON.stringify({model:limits.model,system:rows[0].content,messages:rows.slice(1)}),signal:AbortSignal.any([signal,timeout]),redirect:"error"});
+    const timeout=AbortSignal.timeout(5000);let response:Response;
+    try{response=await fetcher(`${limits.base}/messages/count_tokens`,{method:"POST",headers:{"Content-Type":"application/json",...(limits.token?{Authorization:`Bearer ${limits.token}`}:{})},body:JSON.stringify({model:limits.model,system:rows[0].content,messages:rows.slice(1)}),signal:AbortSignal.any([signal,timeout]),redirect:"error"});}
+    catch(error){if(signal.aborted)throw error;mode="estimate";return estimate();}
     if([404,405,501].includes(response.status)){await response.body?.cancel();mode="estimate";return estimate();}
     check(response.ok,`CLIKA 토큰 계산 실패 (${response.status}). 인증과 /v1/messages/count_tokens를 확인하세요.`,502,"CLIKA_TOKEN_COUNT_FAILED");
     const reader=response.body?.getReader();check(reader,"CLIKA 토큰 계산 응답이 비어 있습니다.",502,"CLIKA_TOKEN_COUNT_FAILED");
